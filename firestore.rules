@@ -1,0 +1,604 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // 共通ヘルパー関数
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasVerifiedEmail() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function currentEmail() {
+      return request.auth.token.email;
+    }
+
+    // Firebase コンソールで事前登録された運営アカウント（プロジェクト作成権限）
+    function isOperator() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/systemConfig/operators)
+        && (
+          (request.auth.uid in get(/databases/$(database)/documents/systemConfig/operators).data.allowedUids)
+          || (hasVerifiedEmail() && currentEmail() in get(/databases/$(database)/documents/systemConfig/operators).data.allowedEmails)
+        );
+    }
+
+    // プロジェクト文書の取得と権限判定
+    function getProjectData(projectId) {
+      return get(/databases/$(database)/documents/projects/$(projectId)).data;
+    }
+
+    function projectExists(projectId) {
+      return exists(/databases/$(database)/documents/projects/$(projectId));
+    }
+
+    function isProjectPublic(projectId) {
+      return projectExists(projectId) && getProjectData(projectId).isPublic == true;
+    }
+
+    // プロジェクト管理者（オーナー管理者1名・移譲不可）
+    function isProjectAdmin(projectId) {
+      return isSignedIn()
+        && projectExists(projectId)
+        && getProjectData(projectId).ownerUid == request.auth.uid;
+    }
+
+    // プロジェクト編集者（確認済みメールアドレスがプロジェクトの editor ACL サブコレクションに存在し、active == true）
+    function isProjectEditor(projectId) {
+      return isProjectAdmin(projectId)
+        || (
+          hasVerifiedEmail()
+          && exists(/databases/$(database)/documents/projects/$(projectId)/editorEmails/$(currentEmail()))
+          && get(/databases/$(database)/documents/projects/$(projectId)/editorEmails/$(currentEmail())).data.active == true
+        );
+    }
+
+    // プロジェクト閲覧権限（公開プロジェクトは誰でも、非公開は管理者・許可編集者のみ）
+    function canReadProject(projectId) {
+      return isProjectPublic(projectId) || isProjectEditor(projectId);
+    }
+
+    // URLバリデーション（http:// または https://、最大2048文字）
+    function isValidUrl(url) {
+      return url is string
+        && url.size() >= 8
+        && url.size() <= 2048
+        && url.matches('^https?://[^\\s<>"]+$');
+    }
+
+    function isValidProfileLink(link) {
+      return link is map
+        && link.keys().hasOnly(['label', 'url'])
+        && link.label is string
+        && link.label.size() >= 1
+        && link.label.size() <= 50
+        && isValidUrl(link.url);
+    }
+
+    function areValidProfileLinks(links) {
+      return links is list
+        && links.size() <= 2
+        && (links.size() < 1 || isValidProfileLink(links[0]))
+        && (links.size() < 2 || isValidProfileLink(links[1]));
+    }
+
+    // WebP Base64 DataURL バリデーション（最大30KB = Base64換算で約41,000文字）
+    function isValidWebpDataUrl(dataUrl, byteSize) {
+      return dataUrl is string
+        && dataUrl.size() >= 30
+        && dataUrl.size() <= 41500
+        && dataUrl.matches('^data:image/webp;base64,[A-Za-z0-9+/=]+$')
+        && byteSize is int
+        && byteSize > 0
+        && byteSize <= 30720;
+    }
+
+    // =========================================================================
+    // 1. 運営アカウント設定 (/systemConfig/operators)
+    // クライアントからの書き込みは一切拒否（Firebaseコンソールのみで設定）
+    // =========================================================================
+    match /systemConfig/operators {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 2. 本人プロフィール (/userProfiles/{uid})
+    // - 所有者UID本人のみ作成・更新可能（プロジェクト管理者・編集者でも他人のプロフィールは変更不可）
+    // - ownerUid は変更不可
+    // - 非公開時は本人以外の読み取りを拒否
+    // - メールアドレスは含めない（hasOnlyで厳格にフィールド制限）
+    // =========================================================================
+    match /userProfiles/{uid} {
+      allow read: if resource.data.isPublic == true
+                  || (isSignedIn() && request.auth.uid == uid);
+
+      allow create: if isSignedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly([
+                      'ownerUid', 'displayName', 'bio', 'links', 'isPublic',
+                      'iconRevision', 'avatarPreset', 'updatedAt'
+                    ])
+                    && request.resource.data.ownerUid == uid
+                    && request.resource.data.displayName is string
+                    && request.resource.data.displayName.size() >= 1
+                    && request.resource.data.displayName.size() <= 60
+                    && request.resource.data.bio is string
+                    && request.resource.data.bio.size() <= 400
+                    && areValidProfileLinks(request.resource.data.links)
+                    && request.resource.data.isPublic is bool
+                    && request.resource.data.iconRevision is int
+                    && request.resource.data.avatarPreset is string
+                    && request.resource.data.avatarPreset.size() <= 40
+                    && request.resource.data.updatedAt is string;
+
+      allow update: if isSignedIn()
+                    && request.auth.uid == uid
+                    && resource.data.ownerUid == uid
+                    && request.resource.data.ownerUid == resource.data.ownerUid
+                    && request.resource.data.keys().hasOnly([
+                      'ownerUid', 'displayName', 'bio', 'links', 'isPublic',
+                      'iconRevision', 'avatarPreset', 'updatedAt'
+                    ])
+                    && request.resource.data.displayName is string
+                    && request.resource.data.displayName.size() >= 1
+                    && request.resource.data.displayName.size() <= 60
+                    && request.resource.data.bio is string
+                    && request.resource.data.bio.size() <= 400
+                    && areValidProfileLinks(request.resource.data.links)
+                    && request.resource.data.isPublic is bool
+                    && request.resource.data.iconRevision is int
+                    && request.resource.data.avatarPreset is string
+                    && request.resource.data.avatarPreset.size() <= 40
+                    && request.resource.data.updatedAt is string;
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 3. 本人プロフィール画像 (/profileIcons/{uid})
+    // - 本人のみ変更・削除可能
+    // - プロフィール本体の isPublic と公開状態が一致していることを検証
+    // =========================================================================
+    match /profileIcons/{uid} {
+      allow read: if resource.data.isPublic == true
+                  || (isSignedIn() && request.auth.uid == uid);
+
+      allow create, update: if isSignedIn()
+                            && request.auth.uid == uid
+                            && request.resource.data.keys().hasOnly([
+                              'ownerUid', 'isPublic', 'revision', 'mimeType',
+                              'width', 'height', 'byteSize', 'dataUrl', 'updatedAt'
+                            ])
+                            && request.resource.data.ownerUid == uid
+                            && request.resource.data.isPublic is bool
+                            && (
+                              !exists(/databases/$(database)/documents/userProfiles/$(uid))
+                              || getAfter(/databases/$(database)/documents/userProfiles/$(uid)).data.isPublic == request.resource.data.isPublic
+                            )
+                            && request.resource.data.revision is int
+                            && request.resource.data.mimeType == 'image/webp'
+                            && request.resource.data.width == 128
+                            && request.resource.data.height == 128
+                            && isValidWebpDataUrl(request.resource.data.dataUrl, request.resource.data.byteSize)
+                            && request.resource.data.updatedAt is string;
+
+      allow delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // =========================================================================
+    // 4. プロジェクト本体 (/projects/{projectId})
+    // - 作成は運営アカウントのみ可能
+    // - ownerUid（オーナー管理者）は初期版では変更不可（移譲なし）
+    // - 公開設定（isPublic）の変更と削除はオーナー管理者のみ可能
+    // - 名前・説明・ロール/スキル/関係タグ定義の更新は編集者も可能
+    // - メールアドレスやメンバー一覧は公開プロジェクト文書に絶対に含めない
+    // =========================================================================
+    match /projects/{projectId} {
+      allow read: if resource.data.isPublic == true
+                  || (
+                    isSignedIn()
+                    && (
+                      resource.data.ownerUid == request.auth.uid
+                      || (
+                        hasVerifiedEmail()
+                        && exists(/databases/$(database)/documents/projects/$(projectId)/editorEmails/$(currentEmail()))
+                        && get(/databases/$(database)/documents/projects/$(projectId)/editorEmails/$(currentEmail())).data.active == true
+                      )
+                    )
+                  );
+
+      allow create: if isOperator()
+                    && request.resource.data.keys().hasOnly([
+                      'id', 'name', 'description', 'ownerUid', 'isPublic',
+                      'roleTags', 'skillTags', 'relationTags', 'groupTags',
+                      'createdAt', 'updatedAt'
+                    ])
+                    && request.resource.data.id == projectId
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() >= 1
+                    && request.resource.data.name.size() <= 100
+                    && request.resource.data.description is string
+                    && request.resource.data.description.size() <= 1000
+                    && request.resource.data.isPublic is bool
+                    && request.resource.data.roleTags is list
+                    && request.resource.data.skillTags is list
+                    && request.resource.data.relationTags is list
+                    && request.resource.data.groupTags is list;
+
+      allow update: if isProjectEditor(projectId)
+                    && request.resource.data.keys().hasOnly([
+                      'id', 'name', 'description', 'ownerUid', 'isPublic',
+                      'roleTags', 'skillTags', 'relationTags', 'groupTags',
+                      'createdAt', 'updatedAt'
+                    ])
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.ownerUid == resource.data.ownerUid
+                    // isPublic の変更は管理者（ownerUid）のみ可能
+                    && (
+                      request.resource.data.isPublic == resource.data.isPublic
+                      || isProjectAdmin(projectId)
+                    )
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() >= 1
+                    && request.resource.data.name.size() <= 100
+                    && request.resource.data.description is string
+                    && request.resource.data.description.size() <= 1000
+                    && request.resource.data.isPublic is bool
+                    && request.resource.data.roleTags is list
+                    && request.resource.data.skillTags is list
+                    && request.resource.data.relationTags is list
+                    && request.resource.data.groupTags is list;
+
+      allow delete: if isProjectAdmin(projectId);
+
+      // -----------------------------------------------------------------------
+      // 4-1. 編集者許可リスト (/projects/{projectId}/editorEmails/{email})
+      // - メンバー一覧を第三者に公開しない（管理者、または自分自身のメールレコードのみ確認可）
+      // - 変更は管理者のみ可能（自己昇格を完全防止）
+      // -----------------------------------------------------------------------
+      match /editorEmails/{email} {
+        allow get: if isProjectAdmin(projectId)
+                   || (hasVerifiedEmail() && currentEmail() == email);
+        allow list: if isProjectAdmin(projectId);
+        allow create, update: if isProjectAdmin(projectId)
+                              && request.resource.data.keys().hasOnly(['email', 'active', 'addedByUid', 'updatedAt'])
+                              && request.resource.data.email == email
+                              && request.resource.data.active is bool
+                              && request.resource.data.addedByUid == request.auth.uid
+                              && request.resource.data.updatedAt is string;
+        allow delete: if isProjectAdmin(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-2. 大グループ・小グループ (/projects/{projectId}/groups/{groupId})
+      // - 2階層制限：小グループ（kind == 'small'）の親は必ず同プロジェクト内の大グループ（kind == 'large'）
+      // -----------------------------------------------------------------------
+      match /groups/{groupId} {
+        allow read: if canReadProject(projectId);
+
+        allow create, update: if isProjectEditor(projectId)
+                              && request.resource.data.keys().hasOnly([
+                                'id', 'projectId', 'name', 'kind', 'parentGroupId',
+                                'color', 'description', 'tags', 'iconId', 'iconRevision',
+                                'avatarPreset', 'order', 'updatedAt'
+                              ])
+                              && request.resource.data.id == groupId
+                              && request.resource.data.projectId == projectId
+                              && request.resource.data.name is string
+                              && request.resource.data.name.size() >= 1
+                              && request.resource.data.name.size() <= 80
+                              && request.resource.data.kind in ['large', 'small']
+                              && (
+                                (request.resource.data.kind == 'large' && request.resource.data.parentGroupId == null)
+                                || (
+                                  request.resource.data.kind == 'small'
+                                  && request.resource.data.parentGroupId is string
+                                  && request.resource.data.parentGroupId != groupId
+                                  && exists(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.parentGroupId))
+                                  && get(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.parentGroupId)).data.kind == 'large'
+                                )
+                              )
+                              && request.resource.data.color is string
+                              && request.resource.data.color.size() <= 30
+                              && request.resource.data.description is string
+                              && request.resource.data.description.size() <= 500
+                              && request.resource.data.tags is list;
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-3. 人物 (/projects/{projectId}/people/{personId})
+      // - メールアドレスや非公開プロフィールの本文は絶対に含めない
+      // - linkedUid の新規設定は、対象本人が有効な招待（pending -> approved）を承認したバッチ書き込み時のみ許可
+      // - linkedUid の解除（nullへの変更）は、連携済み本人またはプロジェクト管理者のみ許可
+      // - 一般の編集操作では linkedUid を維持しなければならない
+      // -----------------------------------------------------------------------
+      match /people/{personId} {
+        allow read: if canReadProject(projectId);
+
+        allow create: if isProjectEditor(projectId)
+                      && request.resource.data.keys().hasOnly([
+                        'id', 'projectId', 'displayName', 'globalRoleIds', 'skillIds',
+                        'color', 'projectMemo', 'linkedUid', 'activeInvitationId',
+                        'tempIconId', 'tempIconRevision', 'avatarPreset', 'updatedAt'
+                      ])
+                      && request.resource.data.id == personId
+                      && request.resource.data.projectId == projectId
+                      && request.resource.data.displayName is string
+                      && request.resource.data.displayName.size() >= 1
+                      && request.resource.data.displayName.size() <= 80
+                      && request.resource.data.globalRoleIds is list
+                      && request.resource.data.skillIds is list
+                      && request.resource.data.color is string
+                      && request.resource.data.color.size() <= 30
+                      && request.resource.data.projectMemo is string
+                      && request.resource.data.projectMemo.size() <= 1000
+                      // 作成時は勝手にアカウント連携できない（必ず未連携 null で開始）
+                      && request.resource.data.linkedUid == null;
+
+        allow update: if request.resource.data.keys().hasOnly([
+                        'id', 'projectId', 'displayName', 'globalRoleIds', 'skillIds',
+                        'color', 'projectMemo', 'linkedUid', 'activeInvitationId',
+                        'tempIconId', 'tempIconRevision', 'avatarPreset', 'updatedAt'
+                      ])
+                      && request.resource.data.id == personId
+                      && request.resource.data.projectId == projectId
+                      && request.resource.data.displayName is string
+                      && request.resource.data.displayName.size() >= 1
+                      && request.resource.data.displayName.size() <= 80
+                      && request.resource.data.globalRoleIds is list
+                      && request.resource.data.skillIds is list
+                      && request.resource.data.color is string
+                      && request.resource.data.color.size() <= 30
+                      && request.resource.data.projectMemo is string
+                      && request.resource.data.projectMemo.size() <= 1000
+                      && (
+                        // パターンA: プロジェクト編集者による通常更新（linkedUid は変更不可）
+                        (
+                          isProjectEditor(projectId)
+                          && request.resource.data.linkedUid == resource.data.linkedUid
+                        )
+                        // パターンB: 招待された本人によるひも付け承認（自分のUIDのみ設定可＋有効な招待の同時承認を検証）
+                        || (
+                          hasVerifiedEmail()
+                          && resource.data.linkedUid == null
+                          && request.resource.data.linkedUid == request.auth.uid
+                          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedUid', 'activeInvitationId', 'updatedAt'])
+                          && resource.data.activeInvitationId is string
+                          && exists(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId))
+                          && get(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.status == 'pending'
+                          && get(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.projectId == projectId
+                          && get(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.personId == personId
+                          && get(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.targetEmail == currentEmail()
+                          && getAfter(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.status == 'approved'
+                          && getAfter(/databases/$(database)/documents/invitations/$(resource.data.activeInvitationId)).data.approvedByUid == request.auth.uid
+                        )
+                        // パターンC: ひも付け解除（本人またはプロジェクト管理者のみ可能）
+                        || (
+                          resource.data.linkedUid != null
+                          && request.resource.data.linkedUid == null
+                          && (
+                            isProjectAdmin(projectId)
+                            || (
+                              isSignedIn()
+                              && resource.data.linkedUid == request.auth.uid
+                              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedUid', 'activeInvitationId', 'updatedAt'])
+                            )
+                          )
+                        )
+                      );
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-4. 所属先ごとの役割 (/projects/{projectId}/memberships/{membershipId})
+      // - 別プロジェクトの人物やグループへの不正参照を拒否
+      // -----------------------------------------------------------------------
+      match /memberships/{membershipId} {
+        allow read: if canReadProject(projectId);
+
+        allow create, update: if isProjectEditor(projectId)
+                              && request.resource.data.keys().hasOnly([
+                                'id', 'projectId', 'personId', 'groupId',
+                                'roleIds', 'memo', 'updatedAt'
+                              ])
+                              && request.resource.data.id == membershipId
+                              && request.resource.data.projectId == projectId
+                              && request.resource.data.personId is string
+                              && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.personId))
+                              && request.resource.data.groupId is string
+                              && exists(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.groupId))
+                              && request.resource.data.roleIds is list
+                              && request.resource.data.memo is string
+                              && request.resource.data.memo.size() <= 500;
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-5. 関係線 (/projects/{projectId}/relationships/{relationshipId})
+      // - 人物間・グループ間・人物とグループの所属以外の関係
+      // - 別プロジェクトの対象への不正参照を拒否
+      // -----------------------------------------------------------------------
+      match /relationships/{relationshipId} {
+        allow read: if canReadProject(projectId);
+
+        allow create, update: if isProjectEditor(projectId)
+                              && request.resource.data.keys().hasOnly([
+                                'id', 'projectId', 'sourceKind', 'sourceId',
+                                'targetKind', 'targetId', 'label', 'tagIds',
+                                'direction', 'color', 'lineStyle', 'memo', 'updatedAt'
+                              ])
+                              && request.resource.data.id == relationshipId
+                              && request.resource.data.projectId == projectId
+                              && request.resource.data.sourceKind in ['person', 'group']
+                              && request.resource.data.targetKind in ['person', 'group']
+                              && (
+                                (request.resource.data.sourceKind == 'person' && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.sourceId)))
+                                || (request.resource.data.sourceKind == 'group' && exists(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.sourceId)))
+                              )
+                              && (
+                                (request.resource.data.targetKind == 'person' && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.targetId)))
+                                || (request.resource.data.targetKind == 'group' && exists(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.targetId)))
+                              )
+                              && request.resource.data.label is string
+                              && request.resource.data.label.size() >= 1
+                              && request.resource.data.label.size() <= 80
+                              && request.resource.data.tagIds is list
+                              && request.resource.data.direction in ['forward', 'bidirectional', 'none']
+                              && request.resource.data.color is string
+                              && request.resource.data.color.size() <= 30
+                              && request.resource.data.lineStyle in ['solid', 'dashed']
+                              && request.resource.data.memo is string
+                              && request.resource.data.memo.size() <= 500;
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-6. 相関図タブ・座標・表示設定 (/projects/{projectId}/diagrams/{diagramId})
+      // -----------------------------------------------------------------------
+      match /diagrams/{diagramId} {
+        allow read: if canReadProject(projectId);
+
+        allow create, update: if isProjectEditor(projectId)
+                              && request.resource.data.keys().hasOnly([
+                                'id', 'projectId', 'name', 'description', 'viewMode',
+                                'nodeStyle', 'nodePositions', 'collapsedGroupIds',
+                                'hiddenNodeIds', 'filterConfig', 'order', 'updatedAt'
+                              ])
+                              && request.resource.data.id == diagramId
+                              && request.resource.data.projectId == projectId
+                              && request.resource.data.name is string
+                              && request.resource.data.name.size() >= 1
+                              && request.resource.data.name.size() <= 80
+                              && request.resource.data.description is string
+                              && request.resource.data.description.size() <= 500
+                              && request.resource.data.viewMode in ['people', 'groups', 'mixed']
+                              && request.resource.data.nodeStyle in ['card', 'compact']
+                              && request.resource.data.nodePositions is map
+                              && request.resource.data.collapsedGroupIds is list;
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-7. プロジェクト用アイコン画像（グループ画像・未連携人物の仮画像）
+      // (/projects/{projectId}/projectIcons/{iconId})
+      // - 編集者が変更可能（ただし連携済み人物の本人アイコンは別コレクション /profileIcons にあるため変更不可）
+      // -----------------------------------------------------------------------
+      match /projectIcons/{iconId} {
+        allow read: if canReadProject(projectId);
+
+        allow create, update: if isProjectEditor(projectId)
+                              && request.resource.data.keys().hasOnly([
+                                'id', 'projectId', 'targetKind', 'targetId',
+                                'revision', 'mimeType', 'width', 'height',
+                                'byteSize', 'dataUrl', 'updatedAt'
+                              ])
+                              && request.resource.data.id == iconId
+                              && request.resource.data.projectId == projectId
+                              && request.resource.data.targetKind in ['group', 'unlinkedPerson']
+                              && request.resource.data.targetId is string
+                              && request.resource.data.revision is int
+                              && request.resource.data.mimeType == 'image/webp'
+                              && request.resource.data.width == 128
+                              && request.resource.data.height == 128
+                              && isValidWebpDataUrl(request.resource.data.dataUrl, request.resource.data.byteSize)
+                              && request.resource.data.updatedAt is string;
+
+        allow delete: if isProjectEditor(projectId);
+      }
+
+      // -----------------------------------------------------------------------
+      // 4-8. 管理者用テストサンドボックスユーザー (/projects/{projectId}/testUsers/{testUserId})
+      // 管理者がテスト用に複数ユーザーを作成・管理するためのコレクション（管理者のみ読み書き可能）
+      // -----------------------------------------------------------------------
+      match /testUsers/{testUserId} {
+        allow read, write: if isProjectAdmin(projectId);
+      }
+    }
+
+    // =========================================================================
+    // 5. 人物とGoogleアカウントのひも付け招待 (/invitations/{invitationId})
+    // - メールアドレスが含まれるため第三者への公開取得を拒否
+    // - 読み取り：そのプロジェクトの管理者、または招待先メールアドレスと一致する確認済みログイン本人のみ
+    // - 作成：そのプロジェクトの管理者のみ
+    // - 承認更新：招待先メールアドレスと一致する確認済みログイン本人のみ（approvedByUid == request.auth.uid）
+    // - 取り消し・削除：プロジェクト管理者のみ
+    // =========================================================================
+    match /invitations/{invitationId} {
+      allow read: if isSignedIn()
+                  && (
+                    isProjectAdmin(resource.data.projectId)
+                    || (hasVerifiedEmail() && resource.data.targetEmail == currentEmail())
+                  );
+
+      allow create: if isSignedIn()
+                    && request.resource.data.keys().hasOnly([
+                      'id', 'projectId', 'projectName', 'personId', 'personDisplayName',
+                      'targetEmail', 'status', 'createdByUid', 'approvedByUid',
+                      'createdAt', 'updatedAt'
+                    ])
+                    && request.resource.data.id == invitationId
+                    && request.resource.data.projectId is string
+                    && isProjectAdmin(request.resource.data.projectId)
+                    && request.resource.data.personId is string
+                    && exists(/databases/$(database)/documents/projects/$(request.resource.data.projectId)/people/$(request.resource.data.personId))
+                    && request.resource.data.targetEmail is string
+                    && request.resource.data.targetEmail.size() >= 3
+                    && request.resource.data.targetEmail.size() <= 254
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.createdByUid == request.auth.uid
+                    && request.resource.data.approvedByUid == null;
+
+      allow update: if isSignedIn()
+                    && request.resource.data.keys().hasOnly([
+                      'id', 'projectId', 'projectName', 'personId', 'personDisplayName',
+                      'targetEmail', 'status', 'createdByUid', 'approvedByUid',
+                      'createdAt', 'updatedAt'
+                    ])
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.projectId == resource.data.projectId
+                    && request.resource.data.personId == resource.data.personId
+                    && request.resource.data.targetEmail == resource.data.targetEmail
+                    && request.resource.data.createdByUid == resource.data.createdByUid
+                    && (
+                      // パターンA: 招待先メールアドレスの確認済み本人による承認
+                      (
+                        hasVerifiedEmail()
+                        && resource.data.status == 'pending'
+                        && resource.data.targetEmail == currentEmail()
+                        && request.resource.data.status == 'approved'
+                        && request.resource.data.approvedByUid == request.auth.uid
+                      )
+                      // パターンB: 招待先本人による辞退
+                      || (
+                        hasVerifiedEmail()
+                        && resource.data.status == 'pending'
+                        && resource.data.targetEmail == currentEmail()
+                        && request.resource.data.status == 'declined'
+                        && request.resource.data.approvedByUid == null
+                      )
+                      // パターンC: プロジェクト管理者による招待キャンセル
+                      || (
+                        isProjectAdmin(resource.data.projectId)
+                        && request.resource.data.status == 'cancelled'
+                      )
+                    );
+
+      allow delete: if isSignedIn() && isProjectAdmin(resource.data.projectId);
+    }
+  }
+}
