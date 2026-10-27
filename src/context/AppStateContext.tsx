@@ -46,16 +46,21 @@ import {
   assertCanUnlinkAccount,
   assertCanUpdateProfileIcon,
   assertCanUpdateUserProfile,
+  canCreateSelfPerson,
+  canDeletePersonCard,
+  canEditPersonCard,
+  canManageRelationship,
   canReadUserProfile,
   evaluateProjectAccess,
+  getPersonPrivilegeRole,
   type AuthActor,
 } from '../utils/securityGuards';
 import { generateUnfathomableId } from '../utils/validation';
 import { getFirebaseClients } from '../services/firebaseClient';
 import { exportProjectBundleToYaml, parseAndValidateYamlBackup } from '../utils/yamlBackup';
 
-const STORAGE_KEY = 'kizunamap_state_v1';
-const SYNC_CHANNEL_NAME = 'kizunamap_multi_tab_sync_v1';
+const STORAGE_KEY = 'kizunamap_state_v2';
+const SYNC_CHANNEL_NAME = 'kizunamap_multi_tab_sync_v2';
 
 interface PersistedLocalStore {
   projects: Record<string, ProjectBundle>;
@@ -156,6 +161,12 @@ export interface AppStateContextValue {
   // 所属・グループ内ロール管理
   upsertMembership: (membership: Omit<Membership, 'projectId' | 'updatedAt'>) => Promise<void>;
   deleteMembership: (membershipId: string) => Promise<void>;
+  moveOrCopyMembershipByDrag: (params: {
+    personId: string;
+    sourceMembershipId: string | null;
+    targetGroupId: string;
+    isCopy: boolean;
+  }) => Promise<{ membershipId: string; action: 'moved' | 'copied' | 'noop' }>;
 
   // 関係線管理
   upsertRelationship: (relationship: Omit<Relationship, 'projectId' | 'updatedAt'>) => Promise<void>;
@@ -280,7 +291,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const currentUserLabel = useMemo(() => {
     if (firebaseAuthUser && !activeTestUserUid) {
-      return `${firebaseAuthUser.displayName || 'Googleユーザー'} (${firebaseAuthUser.email || ''})`;
+      return firebaseAuthUser.displayName || 'Googleユーザー';
     }
     if (!activeTestUser) {
       return '未ログイン（ゲスト閲覧者）';
@@ -472,6 +483,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               ...filtered,
               {
                 email: cleanEmail,
+                uid: newUser.uid,
                 active: true,
                 addedByUid: actor.uid || DEMO_ADMIN_UID,
                 updatedAt: new Date().toISOString(),
@@ -694,6 +706,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
+        const matchedTestUser = prev.testUsers.find(
+          (u) => u.email.toLowerCase() === cleanEmail
+        );
         const others = b.editorEmails.filter((e) => e.email.toLowerCase() !== cleanEmail);
         return {
           ...prev,
@@ -705,6 +720,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 ...others,
                 {
                   email: cleanEmail,
+                  uid: matchedTestUser?.uid ?? null,
                   active: true,
                   addedByUid: actor.uid!,
                   updatedAt: new Date().toISOString(),
@@ -997,7 +1013,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // ノード座標保存（ドラッグ終了時に該当ノードのみ更新、Undo対応）
   const updateNodePosition = useCallback(
     async (diagramId: string, nodeKey: string, pos: NodePosition) => {
-      if (!permissions.isEditor || !currentBundle) return;
+      if (!currentBundle) return;
+      const myLinkedPerson = actor.uid
+        ? currentBundle.people.find((p) => p.linkedUid === actor.uid)
+        : null;
+      const isMyPersonNode =
+        Boolean(myLinkedPerson) &&
+        (nodeKey === `person:${myLinkedPerson!.id}` ||
+          nodeKey === `unaffiliated:${myLinkedPerson!.id}` ||
+          (nodeKey.startsWith('mem:') &&
+            currentBundle.memberships.some(
+              (m) => `mem:${m.id}` === nodeKey && m.personId === myLinkedPerson!.id
+            )));
+
+      if (!permissions.isEditor && !isMyPersonNode) return;
       const diag = currentBundle.diagrams.find((d) => d.id === diagramId);
       const oldPos = diag?.nodePositions[nodeKey];
 
@@ -1064,7 +1093,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       );
     },
-    [commitStoreUpdate, currentBundle, currentProjectId, permissions.isEditor]
+    [actor.uid, commitStoreUpdate, currentBundle, currentProjectId, permissions.isEditor]
   );
 
   const updateMultipleNodePositions = useCallback(
@@ -1286,27 +1315,56 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [commitStoreUpdate, currentProjectId, permissions.isEditor]
   );
 
-  // 人物追加・更新（編集者はプロジェクト上の表示名・ロール・スキル・プロジェクト用メモ・未連携時の仮アイコンを変更可能。本人プロフィールやlinkedUidは勝手に変更不可）
+  // 人物追加・更新
+  // - 管理者・編集者：任意の人物を追加・編集可能（未連携人物も登録可）
+  // - 一般人（ログインあり）：自分自身の人物カードを1枚だけ追加可能（自動的に actor.uid とひも付け）、および自分の人物カードのみ編集可能
   const upsertPerson = useCallback(
     async (
       personInput: Omit<Person, 'projectId' | 'updatedAt' | 'linkedUid' | 'activeInvitationId'>,
       tempIconData?: { dataUrl: string; byteSize: number } | null
     ) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 人物の追加・編集にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      const existingInCurrent = currentBundle.people.find((p) => p.id === personInput.id);
+
+      if (existingInCurrent) {
+        if (!canEditPersonCard(actor, existingInCurrent, currentBundle)) {
+          throw new Error(
+            'PERMISSION_DENIED: 他のユーザーの人物カードを編集する権限がありません。'
+          );
+        }
+      } else {
+        if (!permissions.isEditor) {
+          if (!actor.uid) {
+            throw new Error('PERMISSION_DENIED: 人物の追加にはGoogleログインが必要です。');
+          }
+          if (!canCreateSelfPerson(actor, currentBundle)) {
+            throw new Error(
+              'PERMISSION_DENIED: 一般ログインユーザーが追加できるのは自分自身の人物カード（1アカウントにつき1名）のみです。'
+            );
+          }
+        }
       }
+
       const now = new Date().toISOString();
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
         const existing = b.people.find((p) => p.id === personInput.id);
 
+        // 一般人（ログインあり・非編集者）による新規追加時は、自動的に本人UID（actor.uid）と紐づける
+        const isSelfRegistration = !existing && !permissions.isEditor && Boolean(actor.uid);
+        const resolvedLinkedUid = existing
+          ? existing.linkedUid
+          : isSelfRegistration
+          ? actor.uid
+          : null;
+
         const nextIcons = { ...b.projectIcons };
         let nextTempIconId = existing ? existing.tempIconId : personInput.tempIconId;
         let nextTempIconRev = existing ? existing.tempIconRevision : personInput.tempIconRevision;
 
         // 既に本人アカウント連携済みの場合は、編集者が本人アイコンを上書きすることはできない
-        if (!existing?.linkedUid) {
+        if (!resolvedLinkedUid) {
           if (tempIconData) {
             nextTempIconId = `icon_person_${personInput.id}`;
             nextTempIconRev = (nextTempIconRev || 0) + 1;
@@ -1333,8 +1391,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const nextPerson: Person = {
           ...personInput,
           projectId: currentProjectId,
-          // linkedUid と activeInvitationId は通常編集では絶対に変更させない（新規作成時は null）
-          linkedUid: existing ? existing.linkedUid : null,
+          linkedUid: resolvedLinkedUid,
           activeInvitationId: existing ? existing.activeInvitationId : null,
           tempIconId: nextTempIconId,
           tempIconRevision: nextTempIconRev,
@@ -1345,8 +1402,24 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           ? b.people.map((p) => (p.id === nextPerson.id ? nextPerson : p))
           : [...b.people, nextPerson];
 
+        // 一般ログインユーザーが自分の人物カードを新規作成した際、本人プロフィールが未作成なら初期プロフィールを用意
+        const nextProfiles = { ...prev.userProfiles };
+        if (isSelfRegistration && actor.uid && !nextProfiles[actor.uid]) {
+          nextProfiles[actor.uid] = {
+            ownerUid: actor.uid,
+            displayName: personInput.displayName,
+            bio: '',
+            links: [],
+            isPublic: true,
+            iconRevision: 0,
+            avatarPreset: personInput.avatarPreset || 'user',
+            updatedAt: now,
+          };
+        }
+
         return {
           ...prev,
+          userProfiles: nextProfiles,
           projects: {
             ...prev.projects,
             [currentProjectId]: {
@@ -1358,15 +1431,26 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId, permissions.isEditor]
   );
 
-  // 人物削除（所属・関係線・仮アイコンもクリーンアップ、ただし本人プロフィール自体は絶対に削除しない）
+  // 人物削除（4階層権限ルール：管理者は全削除可、編集者は一般人のみ削除可［管理者・他編集者は削除不可］、一般ログイン本人は自分のカードのみ削除［退会］可）
   const deletePersonWithCascade = useCallback(
     async (personId: string) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 人物の削除にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      const targetPerson = currentBundle.people.find((p) => p.id === personId);
+      if (!targetPerson) return;
+
+      if (!canDeletePersonCard(actor, targetPerson, currentBundle, store.testUsers)) {
+        const targetRole = getPersonPrivilegeRole(targetPerson, currentBundle, store.testUsers);
+        if (permissions.isEditor && (targetRole === 'admin' || targetRole === 'editor')) {
+          throw new Error(
+            'PERMISSION_DENIED: 編集者は「管理者」や「他の編集者」の人物カードを削除できません。'
+          );
+        }
+        throw new Error('PERMISSION_DENIED: この人物カードを削除する権限がありません。');
       }
+
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
@@ -1397,14 +1481,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId, permissions.isEditor, store.testUsers]
   );
 
-  // 所属・グループ内ロールの追加・更新（大グループへの自動所属作成は行わない）
+  // 所属・グループ内ロールの追加・更新（編集者、または一般ログイン本人が自分自身の所属を変更する場合に許可）
   const upsertMembership = useCallback(
     async (membershipInput: Omit<Membership, 'projectId' | 'updatedAt'>) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 所属・役割の編集にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      const targetPerson = currentBundle.people.find((p) => p.id === membershipInput.personId);
+      if (!targetPerson || !canEditPersonCard(actor, targetPerson, currentBundle)) {
+        throw new Error('PERMISSION_DENIED: 所属・役割を編集する権限がありません。');
       }
       const now = new Date().toISOString();
       await commitStoreUpdate((prev) => {
@@ -1447,13 +1533,17 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId]
   );
 
   const deleteMembership = useCallback(
     async (membershipId: string) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 所属の削除にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      const targetMem = currentBundle.memberships.find((m) => m.id === membershipId);
+      if (!targetMem) return;
+      const targetPerson = currentBundle.people.find((p) => p.id === targetMem.personId);
+      if (!targetPerson || !canEditPersonCard(actor, targetPerson, currentBundle)) {
+        throw new Error('PERMISSION_DENIED: 所属を解除する権限がありません。');
       }
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
@@ -1470,15 +1560,113 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId]
   );
 
-  // 関係線の追加・更新（同一対象間の複数関係にも対応）
+  // キャンバス上のドラッグによる所属の「移動（通常ドラッグ）」および「コピー（Ctrl+ドラッグ / 右ドラッグ）」
+  const moveOrCopyMembershipByDrag = useCallback(
+    async (params: {
+      personId: string;
+      sourceMembershipId: string | null;
+      targetGroupId: string;
+      isCopy: boolean;
+    }): Promise<{ membershipId: string; action: 'moved' | 'copied' | 'noop' }> => {
+      if (!currentBundle) {
+        throw new Error('PERMISSION_DENIED: プロジェクトが読み込まれていません。');
+      }
+      const { personId, sourceMembershipId, targetGroupId, isCopy } = params;
+      const targetPerson = currentBundle.people.find((p) => p.id === personId);
+      if (!targetPerson || !canEditPersonCard(actor, targetPerson, currentBundle)) {
+        throw new Error('PERMISSION_DENIED: 他のユーザーの所属を変更する権限がありません。');
+      }
+      const sourceMem = sourceMembershipId
+        ? currentBundle.memberships.find((m) => m.id === sourceMembershipId) || null
+        : null;
+
+      if (sourceMem && sourceMem.groupId === targetGroupId) {
+        return { membershipId: sourceMem.id, action: 'noop' };
+      }
+
+      const existingInTarget = currentBundle.memberships.find(
+        (m) => m.personId === personId && m.groupId === targetGroupId
+      );
+
+      const now = new Date().toISOString();
+      const newMemId = existingInTarget ? existingInTarget.id : generateUnfathomableId('mem');
+      const inheritedRoles = sourceMem ? [...sourceMem.roleIds] : [];
+      const inheritedMemo = sourceMem ? sourceMem.memo : '';
+
+      await commitStoreUpdate((prev) => {
+        const b = prev.projects[currentProjectId];
+        if (!b) return prev;
+
+        let nextMemberships = [...b.memberships];
+
+        if (isCopy || !sourceMem) {
+          // コピー（兼務追加）または未所属からの新規所属追加
+          if (!existingInTarget) {
+            nextMemberships.push({
+              id: newMemId,
+              projectId: currentProjectId,
+              personId,
+              groupId: targetGroupId,
+              roleIds: inheritedRoles,
+              memo: inheritedMemo,
+              updatedAt: now,
+            });
+          }
+        } else {
+          // 移動（元のグループ所属をターゲットグループへ移籍）
+          if (existingInTarget) {
+            // 既に移動先にも所属していた場合は元の所属を削除して統合
+            nextMemberships = nextMemberships.filter((m) => m.id !== sourceMem.id);
+          } else {
+            nextMemberships = nextMemberships.map((m) =>
+              m.id === sourceMem.id
+                ? {
+                    ...m,
+                    groupId: targetGroupId,
+                    updatedAt: now,
+                  }
+                : m
+            );
+          }
+        }
+
+        return {
+          ...prev,
+          projects: {
+            ...prev.projects,
+            [currentProjectId]: {
+              ...b,
+              memberships: nextMemberships,
+            },
+          },
+        };
+      });
+
+      return {
+        membershipId: !isCopy && sourceMem && !existingInTarget ? sourceMem.id : newMemId,
+        action: isCopy || !sourceMem ? 'copied' : 'moved',
+      };
+    },
+    [actor, commitStoreUpdate, currentBundle, currentProjectId]
+  );
+
+  // 関係線の追加・更新（編集者はすべて可、一般ログインユーザーは自分の人物カードが関わる関係線のみ可）
   const upsertRelationship = useCallback(
     async (relInput: Omit<Relationship, 'projectId' | 'updatedAt'>) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 関係線の編集にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      if (!canManageRelationship(actor, relInput, currentBundle)) {
+        throw new Error(
+          'PERMISSION_DENIED: 一般ログインユーザーは、自分自身の人物カードが接続元または接続先に含まれる関係線のみ作成・編集できます。'
+        );
       }
+      const existingRel = currentBundle.relationships.find((r) => r.id === relInput.id);
+      if (existingRel && !canManageRelationship(actor, existingRel, currentBundle)) {
+        throw new Error('PERMISSION_DENIED: この関係線を編集する権限がありません。');
+      }
+
       const now = new Date().toISOString();
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
@@ -1520,13 +1708,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId]
   );
 
   const deleteRelationship = useCallback(
     async (relationshipId: string) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 関係線の削除にはプロジェクト編集権限が必要です。');
+      if (!currentBundle) return;
+      const targetRel = currentBundle.relationships.find((r) => r.id === relationshipId);
+      if (!targetRel) return;
+      if (!canManageRelationship(actor, targetRel, currentBundle)) {
+        throw new Error('PERMISSION_DENIED: この関係線を削除する権限がありません。');
       }
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
@@ -1543,7 +1734,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId]
   );
 
   // 本人プロフィールのオンデマンド取得（非公開プロフィールは本人以外取得拒否）
@@ -1968,6 +2159,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     deletePersonWithCascade,
     upsertMembership,
     deleteMembership,
+    moveOrCopyMembershipByDrag,
     upsertRelationship,
     deleteRelationship,
     userProfiles: store.userProfiles,

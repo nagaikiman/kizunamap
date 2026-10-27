@@ -19,7 +19,14 @@ import {
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
 import { calculateGroupMemberCounts } from '../../utils/groupRules';
-import { resolvePersonView } from '../../utils/securityGuards';
+import {
+  canCreateSelfPerson,
+  canDeletePersonCard,
+  canEditPersonCard,
+  canManageRelationship,
+  getPersonPrivilegeRole,
+  resolvePersonView,
+} from '../../utils/securityGuards';
 import { generateUnfathomableId } from '../../utils/validation';
 import { AvatarBadge } from '../common/AvatarBadge';
 
@@ -58,6 +65,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
     currentBundle,
     actor,
     permissions,
+    testUsers,
     userProfiles,
     profileIcons,
     deletePersonWithCascade,
@@ -115,6 +123,12 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
 
   // 大グループと配下小グループの階層構造
   const largeGroups = currentBundle.groups.filter((g) => g.kind === 'large');
+  const myLinkedPerson = currentBundle.people.find(
+    (p) => actor.uid && p.linkedUid === actor.uid
+  );
+  const canAddSelfPerson = canCreateSelfPerson(actor, currentBundle);
+  const effectiveTab: LeftSidebarTab =
+    activeTab === 'tags' && !permissions.isEditor ? 'all' : activeTab;
 
   const toggleSection = (key: string) =>
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -145,84 +159,91 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
 
           {(
             [
-              { id: 'all', label: 'すべて（ロール・所属・関係）', icon: Layers },
-              { id: 'people', label: '人物・ロール一覧', icon: Users },
-              { id: 'groups', label: 'グループ階層・所属管理', icon: Building2 },
-              { id: 'relations', label: '関係性管理', icon: GitCommitHorizontal },
-              { id: 'tags', label: 'ロール・スキル・タグ管理', icon: Tags },
+              { id: 'all', label: 'すべて（ロール・所属・関係）', icon: Layers, editorOnly: false },
+              { id: 'people', label: '人物・ロール一覧', icon: Users, editorOnly: false },
+              { id: 'groups', label: 'グループ階層・所属管理', icon: Building2, editorOnly: false },
+              { id: 'relations', label: '関係性管理', icon: GitCommitHorizontal, editorOnly: false },
+              { id: 'tags', label: 'ロール・スキル・タグ管理（管理者・編集者用）', icon: Tags, editorOnly: true },
             ] as const
-          ).map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onChangeTab(item.id)}
-                className={`w-10 h-10 rounded-xl flex items-center justify-center transition ${
-                  active
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-                }`}
-                title={item.label}
-              >
-                <Icon size={18} />
-              </button>
-            );
-          })}
+          )
+            .filter((item) => !item.editorOnly || permissions.isEditor)
+            .map((item) => {
+              const Icon = item.icon;
+              const active = effectiveTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onChangeTab(item.id)}
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition ${
+                    active
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  }`}
+                  title={item.label}
+                >
+                  <Icon size={18} />
+                </button>
+              );
+            })}
         </div>
 
         <div className="flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onOpenAdminSettings('project')}
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition"
-            title="プロジェクト設定・YAMLバックアップ・テストユーザー切替"
-          >
-            <Settings size={18} />
-          </button>
+          {permissions.isAdmin && (
+            <button
+              type="button"
+              onClick={() => onOpenAdminSettings('project')}
+              className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition"
+              title="管理メニュー（プロジェクト設定・編集者任命・YAMLバックアップ・テストユーザー管理）"
+              data-testid="sidebar-admin-settings-btn"
+            >
+              <Settings size={18} />
+            </button>
+          )}
         </div>
       </aside>
 
       {/* 2. 左管理パネル本体 */}
       <div className="w-[350px] md:w-[375px] flex flex-col h-full bg-slate-50/70">
-        {/* 上部サブタブバー（[すべて] [人物・ロール] [グループ・所属] [関係性] [タグ]） */}
+        {/* 上部サブタブバー（[すべて] [人物・ロール] [グループ・所属] [関係性] [タグ（編集者以上のみ）]） */}
         <div className="bg-white border-b border-slate-200 px-3 pt-2.5 pb-2 space-y-2.5">
           <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
             {(
               [
-                { id: 'all', label: 'すべて' },
-                { id: 'people', label: '人物・ロール', count: currentBundle.people.length },
-                { id: 'groups', label: 'グループ・所属', count: currentBundle.groups.length },
-                { id: 'relations', label: '関係性', count: currentBundle.relationships.length },
-                { id: 'tags', label: 'タグ管理' },
+                { id: 'all', label: 'すべて', editorOnly: false },
+                { id: 'people', label: '人物・ロール', count: currentBundle.people.length, editorOnly: false },
+                { id: 'groups', label: 'グループ・所属', count: currentBundle.groups.length, editorOnly: false },
+                { id: 'relations', label: '関係性', count: currentBundle.relationships.length, editorOnly: false },
+                { id: 'tags', label: 'タグ管理', editorOnly: true },
               ] as const
-            ).map((t) => {
-              const active = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => onChangeTab(t.id)}
-                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold transition whitespace-nowrap ${
-                    active
-                      ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <span>{t.label}</span>
-                  {'count' in t && t.count !== undefined && (
-                    <span
-                      className={`rounded-full px-1.5 py-0.2 text-[10px] ${
-                        active ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-700'
-                      }`}
-                    >
-                      {t.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            )
+              .filter((t) => !t.editorOnly || permissions.isEditor)
+              .map((t) => {
+                const active = effectiveTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => onChangeTab(t.id)}
+                    className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold transition whitespace-nowrap ${
+                      active
+                        ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>{t.label}</span>
+                    {'count' in t && t.count !== undefined && (
+                      <span
+                        className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                          active ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
           </div>
 
           {/* 検索・絞り込みボックス */}
@@ -244,7 +265,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
         {/* スクロール可能なカードリスト領域 */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
           {/* セクション1: 人物・ロール一覧 */}
-          {(activeTab === 'all' || activeTab === 'people') && (
+          {(effectiveTab === 'all' || effectiveTab === 'people') && (
             <section className="rounded-2xl bg-white border border-slate-200/90 shadow-2xs overflow-hidden">
               <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100 bg-slate-50/50">
                 <button
@@ -260,7 +281,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                 </button>
 
                 <div className="flex items-center gap-1.5">
-                  {permissions.isEditor && (
+                  {permissions.isEditor ? (
                     <button
                       type="button"
                       onClick={() => onOpenPersonEditor(null)}
@@ -269,6 +290,17 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                     >
                       <Plus size={12} /> 人物追加
                     </button>
+                  ) : (
+                    canAddSelfPerson && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenPersonEditor(null)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-700"
+                        data-testid="add-self-person-btn"
+                      >
+                        <Plus size={12} /> 自分の人物追加
+                      </button>
+                    )
                   )}
                   <button
                     type="button"
@@ -310,6 +342,15 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                       .filter((x) => x.grp !== undefined);
 
                     const isSelected = selectedEntityKey === `person:${person.id}`;
+                    const privRole = getPersonPrivilegeRole(person, currentBundle, testUsers);
+                    const isSelfCard = Boolean(actor.uid && person.linkedUid === actor.uid);
+                    const canEditThisPerson = canEditPersonCard(actor, person, currentBundle);
+                    const canDeleteThisPerson = canDeletePersonCard(
+                      actor,
+                      person,
+                      currentBundle,
+                      testUsers
+                    );
 
                     return (
                       <div
@@ -335,10 +376,25 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                               size="sm"
                             />
                             <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="text-xs font-extrabold text-slate-900 truncate">
                                   {resolved.effectiveDisplayName}
                                 </span>
+                                {privRole === 'admin' && (
+                                  <span className="rounded bg-indigo-100 px-1.5 py-0.2 text-[9px] font-extrabold text-indigo-800 shrink-0">
+                                    管理者
+                                  </span>
+                                )}
+                                {privRole === 'editor' && (
+                                  <span className="rounded bg-sky-100 px-1.5 py-0.2 text-[9px] font-extrabold text-sky-800 shrink-0">
+                                    編集者
+                                  </span>
+                                )}
+                                {isSelfCard && (
+                                  <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[9px] font-extrabold text-emerald-800 shrink-0">
+                                    あなた
+                                  </span>
+                                )}
                                 {resolved.linkStatus === 'linked_public' && (
                                   <span title="公開プロフィール連携済" className="inline-flex shrink-0">
                                     <UserCheck
@@ -374,7 +430,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                             </div>
                           </div>
 
-                          {/* アクションボタン群（参考画像のペン・プロフィール・ゴミ箱ボタン構成） */}
+                          {/* アクションボタン群（権限に応じてペン・プロフィール・ゴミ箱ボタンを表示制御） */}
                           <div className="flex items-center gap-1 shrink-0">
                             <button
                               type="button"
@@ -388,31 +444,39 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                             >
                               <Eye size={13} />
                             </button>
-                            {permissions.isEditor && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOpenPersonEditor(person.id);
-                                  }}
-                                  className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
-                                  title="人物・所属ロールを編集"
-                                >
-                                  <Pencil size={13} />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    deletePersonWithCascade(person.id);
-                                  }}
-                                  className="rounded-lg border border-slate-200 bg-white p-1.5 text-rose-500 hover:bg-rose-50"
-                                  title="人物を削除"
-                                >
-                                  <Trash2 size={13} />
-                                </button>
-                              </>
+                            {canEditThisPerson && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenPersonEditor(person.id);
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-100"
+                                title={
+                                  isSelfCard && !permissions.isEditor
+                                    ? '自分の人物カード・所属ロールを編集'
+                                    : '人物・所属ロールを編集'
+                                }
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            )}
+                            {canDeleteThisPerson && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deletePersonWithCascade(person.id);
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white p-1.5 text-rose-500 hover:bg-rose-50"
+                                title={
+                                  isSelfCard && !permissions.isEditor
+                                    ? '自分の人物カードを削除（退会）'
+                                    : '人物を削除'
+                                }
+                              >
+                                <Trash2 size={13} />
+                              </button>
                             )}
                           </div>
                         </div>
@@ -458,7 +522,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
           )}
 
           {/* セクション2: 大グループ・小グループ階層と所属ロール管理 */}
-          {(activeTab === 'all' || activeTab === 'groups') && (
+          {(effectiveTab === 'all' || effectiveTab === 'groups') && (
             <section className="rounded-2xl bg-white border border-slate-200/90 shadow-2xs overflow-hidden">
               <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100 bg-slate-50/50">
                 <button
@@ -644,7 +708,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
           )}
 
           {/* セクション3: 関係性一覧 */}
-          {(activeTab === 'all' || activeTab === 'relations') && (
+          {(effectiveTab === 'all' || effectiveTab === 'relations') && (
             <section className="rounded-2xl bg-white border border-slate-200/90 shadow-2xs overflow-hidden">
               <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100 bg-slate-50/50">
                 <button
@@ -728,7 +792,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                           </div>
                         </div>
 
-                        {permissions.isEditor && (
+                        {canManageRelationship(actor, rel, currentBundle) && (
                           <div className="flex items-center gap-1 shrink-0">
                             <button
                               type="button"
@@ -752,13 +816,14 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                     );
                   })}
 
-                  {permissions.isEditor && (
+                  {(permissions.isEditor || Boolean(myLinkedPerson)) && (
                     <button
                       type="button"
                       onClick={() => onOpenRelationshipEditor(null)}
                       className="w-full rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100/60 transition flex items-center justify-center gap-1"
                     >
-                      <Plus size={14} /> 関係性を追加
+                      <Plus size={14} />{' '}
+                      {permissions.isEditor ? '関係性を追加' : '自分の関係性を追加'}
                     </button>
                   )}
                 </div>
@@ -766,8 +831,8 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
             </section>
           )}
 
-          {/* セクション4: タグ管理（ロール・スキル・関係・グループタグの追加・名称変更・削除） */}
-          {activeTab === 'tags' && (
+          {/* セクション4: タグ管理（管理者・編集者のみ表示・編集可能） */}
+          {effectiveTab === 'tags' && permissions.isEditor && (
             <section className="rounded-2xl bg-white border border-slate-200 p-3.5 space-y-4">
               <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-800">
                 <Tags size={15} className="text-indigo-600" />

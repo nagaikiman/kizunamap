@@ -270,7 +270,7 @@ service cloud.firestore {
                    || (hasVerifiedEmail() && currentEmail() == email);
         allow list: if isProjectAdmin(projectId);
         allow create, update: if isProjectAdmin(projectId)
-                              && request.resource.data.keys().hasOnly(['email', 'active', 'addedByUid', 'updatedAt'])
+                              && request.resource.data.keys().hasOnly(['email', 'uid', 'active', 'addedByUid', 'updatedAt'])
                               && request.resource.data.email == email
                               && request.resource.data.active is bool
                               && request.resource.data.addedByUid == request.auth.uid
@@ -319,15 +319,14 @@ service cloud.firestore {
       // -----------------------------------------------------------------------
       // 4-3. 人物 (/projects/{projectId}/people/{personId})
       // - メールアドレスや非公開プロフィールの本文は絶対に含めない
-      // - linkedUid の新規設定は、対象本人が有効な招待（pending -> approved）を承認したバッチ書き込み時のみ許可
-      // - linkedUid の解除（nullへの変更）は、連携済み本人またはプロジェクト管理者のみ許可
-      // - 一般の編集操作では linkedUid を維持しなければならない
+      // - 管理者・編集者は未連携人物を作成可能
+      // - 一般ログインユーザーは自分自身の人物カード（linkedUid == request.auth.uid, personId == 'self_' + request.auth.uid または本人UID紐づけ）を作成・更新・削除（退会）可能
+      // - 削除ルール：管理者は全削除可、編集者は管理者以外の削除可、一般ログインユーザーは自分のカードのみ削除（退会）可
       // -----------------------------------------------------------------------
       match /people/{personId} {
         allow read: if canReadProject(projectId);
 
-        allow create: if isProjectEditor(projectId)
-                      && request.resource.data.keys().hasOnly([
+        allow create: if request.resource.data.keys().hasOnly([
                         'id', 'projectId', 'displayName', 'globalRoleIds', 'skillIds',
                         'color', 'projectMemo', 'linkedUid', 'activeInvitationId',
                         'tempIconId', 'tempIconRevision', 'avatarPreset', 'updatedAt'
@@ -343,8 +342,16 @@ service cloud.firestore {
                       && request.resource.data.color.size() <= 30
                       && request.resource.data.projectMemo is string
                       && request.resource.data.projectMemo.size() <= 1000
-                      // 作成時は勝手にアカウント連携できない（必ず未連携 null で開始）
-                      && request.resource.data.linkedUid == null;
+                      && (
+                        // 管理者・編集者による新規作成（未連携 null）
+                        (isProjectEditor(projectId) && request.resource.data.linkedUid == null)
+                        // 一般人（ログインあり）による自分自身の人物カード作成（自分のUIDのみ紐づけ可）
+                        || (
+                          hasVerifiedEmail()
+                          && canReadProject(projectId)
+                          && request.resource.data.linkedUid == request.auth.uid
+                        )
+                      );
 
         allow update: if request.resource.data.keys().hasOnly([
                         'id', 'projectId', 'displayName', 'globalRoleIds', 'skillIds',
@@ -363,9 +370,9 @@ service cloud.firestore {
                       && request.resource.data.projectMemo is string
                       && request.resource.data.projectMemo.size() <= 1000
                       && (
-                        // パターンA: プロジェクト編集者による通常更新（linkedUid は変更不可）
+                        // パターンA: プロジェクト編集者 または 本人（linkedUid == request.auth.uid）による通常更新（linkedUid は変更不可）
                         (
-                          isProjectEditor(projectId)
+                          (isProjectEditor(projectId) || (isSignedIn() && resource.data.linkedUid == request.auth.uid))
                           && request.resource.data.linkedUid == resource.data.linkedUid
                         )
                         // パターンB: 招待された本人によるひも付け承認（自分のUIDのみ設定可＋有効な招待の同時承認を検証）
@@ -398,18 +405,22 @@ service cloud.firestore {
                         )
                       );
 
-        allow delete: if isProjectEditor(projectId);
+        allow delete: if isProjectAdmin(projectId)
+                      || (isSignedIn() && resource.data.linkedUid == request.auth.uid)
+                      || (
+                        isProjectEditor(projectId)
+                        && resource.data.linkedUid != getProjectData(projectId).ownerUid
+                      );
       }
 
       // -----------------------------------------------------------------------
       // 4-4. 所属先ごとの役割 (/projects/{projectId}/memberships/{membershipId})
-      // - 別プロジェクトの人物やグループへの不正参照を拒否
+      // - 編集者、または一般ログイン本人が自分自身の人物カードの所属を変更する場合に許可
       // -----------------------------------------------------------------------
       match /memberships/{membershipId} {
         allow read: if canReadProject(projectId);
 
-        allow create, update: if isProjectEditor(projectId)
-                              && request.resource.data.keys().hasOnly([
+        allow create, update: if request.resource.data.keys().hasOnly([
                                 'id', 'projectId', 'personId', 'groupId',
                                 'roleIds', 'memo', 'updatedAt'
                               ])
@@ -421,24 +432,34 @@ service cloud.firestore {
                               && exists(/databases/$(database)/documents/projects/$(projectId)/groups/$(request.resource.data.groupId))
                               && request.resource.data.roleIds is list
                               && request.resource.data.memo is string
-                              && request.resource.data.memo.size() <= 500;
+                              && request.resource.data.memo.size() <= 500
+                              && (
+                                isProjectEditor(projectId)
+                                || (
+                                  isSignedIn()
+                                  && get(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.personId)).data.linkedUid == request.auth.uid
+                                )
+                              );
 
-        allow delete: if isProjectEditor(projectId);
+        allow delete: if isProjectEditor(projectId)
+                      || (
+                        isSignedIn()
+                        && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.personId))
+                        && get(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.personId)).data.linkedUid == request.auth.uid
+                      );
       }
 
       // -----------------------------------------------------------------------
       // 4-5. 関係線 (/projects/{projectId}/relationships/{relationshipId})
-      // - 人物間・グループ間・人物とグループの所属以外の関係
-      // - 別プロジェクトの対象への不正参照を拒否
+      // - 編集者はすべて操作可、一般ログインユーザーは自分の人物カードが接続元または接続先に含まれる関係線のみ操作可
       // -----------------------------------------------------------------------
       match /relationships/{relationshipId} {
         allow read: if canReadProject(projectId);
 
-        allow create, update: if isProjectEditor(projectId)
-                              && request.resource.data.keys().hasOnly([
+        allow create, update: if request.resource.data.keys().hasOnly([
                                 'id', 'projectId', 'sourceKind', 'sourceId',
-                                'targetKind', 'targetId', 'label', 'tagIds',
-                                'direction', 'color', 'lineStyle', 'memo', 'updatedAt'
+                                'targetKind', 'targetId', 'sourceHandle', 'targetHandle',
+                                'label', 'tagIds', 'direction', 'color', 'lineStyle', 'memo', 'updatedAt'
                               ])
                               && request.resource.data.id == relationshipId
                               && request.resource.data.projectId == projectId
@@ -461,9 +482,26 @@ service cloud.firestore {
                               && request.resource.data.color.size() <= 30
                               && request.resource.data.lineStyle in ['solid', 'dashed']
                               && request.resource.data.memo is string
-                              && request.resource.data.memo.size() <= 500;
+                              && request.resource.data.memo.size() <= 500
+                              && (
+                                isProjectEditor(projectId)
+                                || (
+                                  isSignedIn()
+                                  && (
+                                    (request.resource.data.sourceKind == 'person' && get(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.sourceId)).data.linkedUid == request.auth.uid)
+                                    || (request.resource.data.targetKind == 'person' && get(/databases/$(database)/documents/projects/$(projectId)/people/$(request.resource.data.targetId)).data.linkedUid == request.auth.uid)
+                                  )
+                                )
+                              );
 
-        allow delete: if isProjectEditor(projectId);
+        allow delete: if isProjectEditor(projectId)
+                      || (
+                        isSignedIn()
+                        && (
+                          (resource.data.sourceKind == 'person' && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.sourceId)) && get(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.sourceId)).data.linkedUid == request.auth.uid)
+                          || (resource.data.targetKind == 'person' && exists(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.targetId)) && get(/databases/$(database)/documents/projects/$(projectId)/people/$(resource.data.targetId)).data.linkedUid == request.auth.uid)
+                        )
+                      );
       }
 
       // -----------------------------------------------------------------------

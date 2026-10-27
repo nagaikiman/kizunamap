@@ -11,11 +11,23 @@ import {
   X,
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
-import type { EntityKind, Group, Person, RelationDirection, RelationLineStyle } from '../../types/domain';
+import type {
+  EntityKind,
+  Group,
+  HandleSide,
+  Person,
+  RelationDirection,
+  RelationLineStyle,
+} from '../../types/domain';
 import {
   analyzeGroupDeletionImpact,
   validateAndAnalyzeGroupParentChange,
 } from '../../utils/groupRules';
+import {
+  canDeletePersonCard,
+  canManageRelationship,
+  getPersonPrivilegeRole,
+} from '../../utils/securityGuards';
 import { generateUnfathomableId } from '../../utils/validation';
 import { AvatarBadge, AVATAR_PRESET_OPTIONS } from '../common/AvatarBadge';
 import { IconCropperModal } from './IconCropperModal';
@@ -43,6 +55,10 @@ interface PersonEditorModalProps {
 export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, onClose }) => {
   const {
     currentBundle,
+    actor,
+    permissions,
+    testUsers,
+    userProfiles,
     upsertPerson,
     deletePersonWithCascade,
     upsertMembership,
@@ -53,7 +69,11 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
     ? currentBundle?.people.find((p) => p.id === personId) || null
     : null;
 
-  const [displayName, setDisplayName] = useState(existing?.displayName || '');
+  const isSelfRegistration = !existing && !permissions.isEditor && Boolean(actor.uid);
+  const defaultSelfName =
+    isSelfRegistration && actor.uid ? userProfiles[actor.uid]?.displayName || '' : '';
+
+  const [displayName, setDisplayName] = useState(existing?.displayName || defaultSelfName);
   const [globalRoleIds, setGlobalRoleIds] = useState<string[]>(existing?.globalRoleIds || []);
   const [skillIds, setSkillIds] = useState<string[]>(existing?.skillIds || []);
   const [color, setColor] = useState(existing?.color || '#2563eb');
@@ -152,7 +172,11 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
         <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
             <UserPlus size={17} className="text-indigo-600" />
-            {existing ? `人物・ロール設定の編集: ${existing.displayName}` : '人物の新規登録（Googleアカウント不要でも登録可）'}
+            {existing
+              ? `人物・ロール設定の編集: ${existing.displayName}`
+              : isSelfRegistration
+              ? '自分の人物カードを追加（あなたのGoogleアカウントに紐づけ）'
+              : '人物の新規登録（Googleアカウント不要でも登録可）'}
           </h3>
           <button
             type="button"
@@ -164,6 +188,16 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
         </div>
 
         <form onSubmit={handleSavePerson} className="p-6 overflow-y-auto space-y-5 flex-1">
+          {isSelfRegistration && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 space-y-1">
+              <p className="font-bold">
+                あなたのGoogleアカウントに紐づく人物カード（1アカウントにつき1名まで）を追加します
+              </p>
+              <p className="text-[11px] text-emerald-800">
+                追加後は、あなた自身のプロフィール・所属グループ・関係線を自由に編集できます（メールアドレスは管理者以外に公開されません）。
+              </p>
+            </div>
+          )}
           {errorMsg && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">
               {errorMsg}
@@ -495,14 +529,17 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
 
           {/* フッターボタン */}
           <div className="flex items-center justify-between border-t border-slate-200 pt-4">
-            {existing ? (
+            {existing && canDeletePersonCard(actor, existing, currentBundle, testUsers) ? (
               !confirmDelete ? (
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(true)}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100"
                 >
-                  <Trash2 size={14} /> 人物を削除
+                  <Trash2 size={14} />{' '}
+                  {existing.linkedUid === actor.uid && !permissions.isEditor
+                    ? '自分の人物カードを削除（退会）'
+                    : '人物を削除'}
                 </button>
               ) : (
                 <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl">
@@ -528,6 +565,13 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
                   </button>
                 </div>
               )
+            ) : existing &&
+              permissions.isEditor &&
+              !permissions.isAdmin &&
+              getPersonPrivilegeRole(existing, currentBundle, testUsers) !== 'general' ? (
+              <span className="text-[11px] font-semibold text-slate-400">
+                ※管理者および他の編集者の人物カードは編集者からは削除できません
+              </span>
             ) : (
               <div />
             )}
@@ -919,6 +963,8 @@ interface RelationshipEditorModalProps {
   relationshipId?: string | null;
   initialSource?: { kind: EntityKind; id: string };
   initialTarget?: { kind: EntityKind; id: string };
+  initialSourceHandle?: HandleSide | null;
+  initialTargetHandle?: HandleSide | null;
   onClose: () => void;
 }
 
@@ -926,18 +972,26 @@ export const RelationshipEditorModal: React.FC<RelationshipEditorModalProps> = (
   relationshipId,
   initialSource,
   initialTarget,
+  initialSourceHandle = null,
+  initialTargetHandle = null,
   onClose,
 }) => {
-  const { currentBundle, upsertRelationship, deleteRelationship } = useAppState();
+  const { currentBundle, actor, permissions, upsertRelationship, deleteRelationship } =
+    useAppState();
 
   const existing = relationshipId
     ? currentBundle?.relationships.find((r) => r.id === relationshipId) || null
     : null;
 
+  const myLinkedPerson = currentBundle?.people.find(
+    (p) => actor.uid && p.linkedUid === actor.uid
+  );
+
   const defaultSourceKind = existing?.sourceKind || initialSource?.kind || 'person';
   const defaultSourceId =
     existing?.sourceId ||
     initialSource?.id ||
+    (!permissions.isEditor && myLinkedPerson ? myLinkedPerson.id : '') ||
     currentBundle?.people[0]?.id ||
     currentBundle?.groups[0]?.id ||
     '';
@@ -954,6 +1008,12 @@ export const RelationshipEditorModal: React.FC<RelationshipEditorModalProps> = (
   const [sourceId, setSourceId] = useState<string>(defaultSourceId);
   const [targetKind, setTargetKind] = useState<EntityKind>(defaultTargetKind);
   const [targetId, setTargetId] = useState<string>(defaultTargetId);
+  const [sourceHandle, setSourceHandle] = useState<HandleSide | null>(
+    existing?.sourceHandle ?? initialSourceHandle ?? null
+  );
+  const [targetHandle, setTargetHandle] = useState<HandleSide | null>(
+    existing?.targetHandle ?? initialTargetHandle ?? null
+  );
   const [label, setLabel] = useState(existing?.label || '');
   const [tagIds, setTagIds] = useState<string[]>(existing?.tagIds || []);
   const [direction, setDirection] = useState<RelationDirection>(existing?.direction || 'forward');
@@ -983,6 +1043,8 @@ export const RelationshipEditorModal: React.FC<RelationshipEditorModalProps> = (
         sourceId,
         targetKind,
         targetId,
+        sourceHandle,
+        targetHandle,
         label: label.trim(),
         tagIds,
         direction,
@@ -1014,6 +1076,11 @@ export const RelationshipEditorModal: React.FC<RelationshipEditorModalProps> = (
         </div>
 
         <form onSubmit={handleSave} className="p-6 space-y-4">
+          {!permissions.isEditor && myLinkedPerson && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+              一般ログインユーザーは、自分自身の人物カード（<strong>{myLinkedPerson.displayName}</strong>）が「接続元」または「接続先」に含まれる関係線を作成・編集できます。
+            </div>
+          )}
           {errorMsg && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">
               {errorMsg}
@@ -1167,7 +1234,7 @@ export const RelationshipEditorModal: React.FC<RelationshipEditorModalProps> = (
           </div>
 
           <div className="flex items-center justify-between border-t border-slate-200 pt-4">
-            {existing ? (
+            {existing && canManageRelationship(actor, existing, currentBundle) ? (
               <button
                 type="button"
                 onClick={async () => {

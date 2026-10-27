@@ -1,9 +1,11 @@
 import type {
   AccountInvitation,
   EditorEmailRecord,
+  EntityKind,
   Person,
   ProfileIconDoc,
   ProjectBundle,
+  TestSandboxUser,
   UserProfile,
 } from '../types/domain';
 import { validateProcessedIconDataUrl } from './imageProcessor';
@@ -42,6 +44,116 @@ export function evaluateProjectAccess(
   const canRead = bundle.project.isPublic || isEditor;
 
   return { isAdmin, isEditor, canRead };
+}
+
+/**
+ * 人物カードに紐づくアカウントの権限階層（管理者 / 編集者 / 一般人）を判定
+ * - 編集者が「管理者」や「他の編集者」の人物カードを削除できないようにするためのガード用
+ */
+export function getPersonPrivilegeRole(
+  person: Person,
+  bundle: ProjectBundle,
+  testUsers?: TestSandboxUser[]
+): 'admin' | 'editor' | 'general' {
+  if (!person.linkedUid) return 'general';
+  if (person.linkedUid === bundle.project.ownerUid) return 'admin';
+
+  // editorEmails に uid が記録されているか、testUsers 経由で一致する確認済みメールアドレスが active かを判定
+  const linkedTestUser = testUsers?.find((u) => u.uid === person.linkedUid);
+  const isEditorPerson = bundle.editorEmails.some(
+    (rec) =>
+      rec.active &&
+      ((rec.uid && rec.uid === person.linkedUid) ||
+        (linkedTestUser && rec.email.toLowerCase() === linkedTestUser.email.toLowerCase()))
+  );
+  if (isEditorPerson) return 'editor';
+  return 'general';
+}
+
+/**
+ * 一般人（ログインあり）が自分自身の人物カードを新規作成できるか判定
+ * - なりすまし・大量作成防止のため、1つのGoogleアカウント（UID）につき自分の人物カードは1枚まで
+ */
+export function canCreateSelfPerson(actor: AuthActor, bundle: ProjectBundle): boolean {
+  if (!actor.uid) return false;
+  return !bundle.people.some((p) => p.linkedUid === actor.uid);
+}
+
+/**
+ * 人物カード（表示名・色・ロール・スキル・自分の所属）を編集できるか判定
+ * - 管理者・編集者：全員の人物カードを編集可能（ただし本人プロフィールは本人のみ）
+ * - 一般人（ログインあり）：自分自身の人物カード（linkedUid === actor.uid）のみ編集可能
+ */
+export function canEditPersonCard(
+  actor: AuthActor,
+  person: Person,
+  bundle: ProjectBundle
+): boolean {
+  const { isEditor } = evaluateProjectAccess(actor, bundle);
+  if (isEditor) return true;
+  if (actor.uid && person.linkedUid === actor.uid) return true;
+  return false;
+}
+
+/**
+ * 人物カードを削除できるか判定（4階層権限ルール）
+ * 1. 管理者：全ユーザーの削除が可能（編集者・一般人・未連携すべて削除可）
+ * 2. 編集者：一般人ユーザー（および未連携人物）の削除が可能。管理者や他の編集者は削除不可
+ * 3. 一般人（ログインあり）：自分自身の人物カードのみ削除（退会）可能
+ * 4. 一般人（ログイン無し）：削除不可
+ */
+export function canDeletePersonCard(
+  actor: AuthActor,
+  person: Person,
+  bundle: ProjectBundle,
+  testUsers?: TestSandboxUser[]
+): boolean {
+  if (!actor.uid) return false;
+  const { isAdmin, isEditor } = evaluateProjectAccess(actor, bundle);
+
+  if (isAdmin) {
+    return true;
+  }
+
+  // 本人が自分自身の人物カードを削除（退会）する場合は常に許可（管理者以外）
+  if (person.linkedUid === actor.uid) {
+    return true;
+  }
+
+  if (isEditor) {
+    const targetPrivilege = getPersonPrivilegeRole(person, bundle, testUsers);
+    // 編集者は「一般人（general）」のみ削除可能（「管理者（admin）」や「他の編集者（editor）」は削除不可）
+    return targetPrivilege === 'general';
+  }
+
+  return false;
+}
+
+/**
+ * 関係線を作成・編集・削除・結点ドラッグ付け替えできるか判定
+ * - 管理者・編集者：すべての関係線を操作可能
+ * - 一般人（ログインあり）：自分自身の人物カードが接続元（source）または接続先（target）に含まれる関係線のみ操作可能
+ */
+export function canManageRelationship(
+  actor: AuthActor,
+  rel: {
+    sourceKind: EntityKind;
+    sourceId: string;
+    targetKind: EntityKind;
+    targetId: string;
+  },
+  bundle: ProjectBundle
+): boolean {
+  if (!actor.uid) return false;
+  const { isEditor } = evaluateProjectAccess(actor, bundle);
+  if (isEditor) return true;
+
+  const myPerson = bundle.people.find((p) => p.linkedUid === actor.uid);
+  if (!myPerson) return false;
+
+  const isSourceMe = rel.sourceKind === 'person' && rel.sourceId === myPerson.id;
+  const isTargetMe = rel.targetKind === 'person' && rel.targetId === myPerson.id;
+  return isSourceMe || isTargetMe;
 }
 
 /**

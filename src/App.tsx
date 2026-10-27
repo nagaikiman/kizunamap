@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, Network, PanelLeft, ShieldAlert } from 'lucide-react';
 import { AppStateProvider, useAppState } from './context/AppStateContext';
-import type { EntityKind } from './types/domain';
+import type { EntityKind, HandleSide } from './types/domain';
 import { TopHeaderBar } from './components/layout/TopHeaderBar';
 import { LeftManagementPanel, type LeftSidebarTab } from './components/sidebar/LeftManagementPanel';
 import { CorrelationCanvas } from './components/canvas/CorrelationCanvas';
@@ -37,6 +37,8 @@ const KizunaMapWorkspace: React.FC = () => {
     relId?: string | null;
     src?: { kind: EntityKind; id: string };
     tgt?: { kind: EntityKind; id: string };
+    srcHandle?: HandleSide | null;
+    tgtHandle?: HandleSide | null;
   } | null>(null);
   const [adminModalTab, setAdminModalTab] = useState<
     'project' | 'members' | 'yaml' | 'testUsers' | null
@@ -115,6 +117,7 @@ const KizunaMapWorkspace: React.FC = () => {
       <TopHeaderBar
         onOpenAdminSettings={(t) => setAdminModalTab(t || 'project')}
         onOpenSelfProfileModal={(pid) => setProfileModalPersonId(pid)}
+        onOpenSelfPersonCreator={() => setPersonEditorTargetId(null)}
       />
 
       {/* スマートフォン向け表示切替バー */}
@@ -181,8 +184,14 @@ const KizunaMapWorkspace: React.FC = () => {
             onSelectEntityKey={setSelectedEntityKey}
             onOpenPersonProfile={(pid) => setProfileModalPersonId(pid)}
             onOpenGroupDetail={(gid) => setGroupDetailModalId(gid)}
-            onOpenRelationshipEditor={(relId, src, tgt) =>
-              setRelEditorTarget({ relId: relId ?? null, src, tgt })
+            onOpenRelationshipEditor={(relId, src, tgt, srcHandle, tgtHandle) =>
+              setRelEditorTarget({
+                relId: relId ?? null,
+                src,
+                tgt,
+                srcHandle: srcHandle ?? null,
+                tgtHandle: tgtHandle ?? null,
+              })
             }
             searchQuery={searchQuery}
           />
@@ -227,6 +236,8 @@ const KizunaMapWorkspace: React.FC = () => {
           relationshipId={relEditorTarget.relId}
           initialSource={relEditorTarget.src}
           initialTarget={relEditorTarget.tgt}
+          initialSourceHandle={relEditorTarget.srcHandle}
+          initialTargetHandle={relEditorTarget.tgtHandle}
           onClose={() => setRelEditorTarget(null)}
         />
       )}

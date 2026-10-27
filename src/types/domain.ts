@@ -96,6 +96,7 @@ export interface Project {
  */
 export interface EditorEmailRecord {
   email: string;
+  uid?: string | null;
   active: boolean;
   addedByUid: string;
   updatedAt: string;
@@ -167,6 +168,7 @@ export interface Membership {
 export type EntityKind = 'person' | 'group';
 export type RelationDirection = 'forward' | 'bidirectional' | 'none';
 export type RelationLineStyle = 'solid' | 'dashed';
+export type HandleSide = 'top' | 'right' | 'bottom' | 'left';
 
 export interface Relationship {
   id: string;
@@ -175,6 +177,8 @@ export interface Relationship {
   sourceId: string;
   targetKind: EntityKind;
   targetId: string;
+  sourceHandle?: HandleSide | null; // カードの結合位置（上・右・下・左）
+  targetHandle?: HandleSide | null; // カードの結合位置（上・右・下・左）
   label: string;                 // 関係名（例：開発指示、レビュー依頼）
   tagIds: string[];              // 関係タグ（複数）
   direction: RelationDirection;  // 片方向・双方向・矢印なし

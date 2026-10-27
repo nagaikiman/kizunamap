@@ -1,7 +1,6 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import {
-  Building2,
   ChevronDown,
   ChevronRight,
   Lock,
@@ -12,6 +11,210 @@ import type { Group, NodeDisplayStyle, Person, TagItem } from '../../types/domai
 import type { ResolvedPersonView } from '../../utils/securityGuards';
 import { AvatarBadge } from '../common/AvatarBadge';
 
+/**
+ * シングルクリック（フォーカス）とダブルクリック／ダブルタップ（詳細モーダル起動）を判定するフック
+ */
+function useFocusAndOpenGesture(
+  onFocus: () => void,
+  onOpenDetail: () => void
+): (e: React.MouseEvent) => void {
+  const lastTapTimeRef = useRef<number>(0);
+
+  return (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const now = Date.now();
+    const delta = now - lastTapTimeRef.current;
+    lastTapTimeRef.current = now;
+
+    if (delta > 0 && delta < 330) {
+      // ダブルクリックまたはダブルタップ（330ms以内）で詳細モーダルを開く
+      onOpenDetail();
+    } else {
+      // シングルクリックではフォーカス（強調）のみ当てる
+      onFocus();
+    }
+  };
+}
+
+/**
+ * カードの四方（上・右・下・左）すべてから関係線を出したり受けたり・付け替えたりできる共通結点（Handle）
+ * ReactFlow の ConnectionMode.Loose と組み合わせることで、4点すべてが始点（source）・終点（target）の両方として機能します。
+ */
+const FourSideHandles: React.FC = () => (
+  <>
+    <Handle
+      type="source"
+      position={Position.Top}
+      id="top"
+      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
+    />
+    <Handle
+      type="source"
+      position={Position.Right}
+      id="right"
+      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
+    />
+    <Handle
+      type="source"
+      position={Position.Bottom}
+      id="bottom"
+      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
+    />
+    <Handle
+      type="source"
+      position={Position.Left}
+      id="left"
+      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
+    />
+  </>
+);
+
+// ============================================================================
+// 1. 初期画面（所属中心 / mixedモード）専用：
+//    グループ枠内に配置される人物ノード（名前のすぐ下に「ここでのロール」のみを表示）
+// ============================================================================
+export interface ScopedPersonNodeData extends Record<string, unknown> {
+  person: Person;
+  resolved: ResolvedPersonView;
+  membershipId: string | null;
+  groupId: string | null;
+  groupName: string | null;
+  rolesHere: TagItem[]; // ここでのロール（所属先グループでの役割）
+  nodeStyle: NodeDisplayStyle;
+  isHighlighted: boolean;
+  isDimmed: boolean;
+  onFocusPerson: (personId: string) => void;
+  onOpenPerson: (personId: string) => void;
+}
+
+export const ScopedPersonFlowNode: React.FC<NodeProps> = ({ data }) => {
+  const d = data as unknown as ScopedPersonNodeData;
+  const { person, resolved, rolesHere, nodeStyle, isHighlighted, isDimmed } = d;
+
+  const handleClick = useFocusAndOpenGesture(
+    () => d.onFocusPerson(person.id),
+    () => d.onOpenPerson(person.id)
+  );
+
+  const opacityClass = isDimmed ? 'opacity-30' : 'opacity-100';
+
+  if (nodeStyle === 'compact') {
+    return (
+      <div
+        onClick={handleClick}
+        onContextMenu={(e) => e.preventDefault()}
+        title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
+        className={`group relative flex flex-col items-center cursor-pointer select-none transition-all ${opacityClass}`}
+        data-testid={`person-node-${person.id}`}
+      >
+        <FourSideHandles />
+        <AvatarBadge
+          name={resolved.effectiveDisplayName}
+          color={person.color}
+          iconDataUrl={resolved.iconDataUrl}
+          preset={resolved.avatarPreset}
+          size="md"
+          className={isHighlighted ? 'ring-3 ring-indigo-600 scale-105' : ''}
+        />
+        <div className="mt-1 rounded-md bg-white px-2.5 py-0.5 text-[11px] font-extrabold text-slate-900 border border-slate-300 shadow-2xs whitespace-nowrap">
+          {resolved.effectiveDisplayName}
+        </div>
+        {/* 名前の下に「ここでのロール」を表示 */}
+        <div className="mt-0.5 flex flex-wrap justify-center gap-0.5 max-w-[165px]">
+          {rolesHere.length > 0 ? (
+            rolesHere.map((r) => (
+              <span
+                key={r.id}
+                className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none"
+                style={{ backgroundColor: r.color }}
+              >
+                {r.name}
+              </span>
+            ))
+          ) : (
+            <span className="text-[10px] text-slate-500 font-medium">メンバー</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // 標準カード型（名前の下に「ここでのロール」をスッキリ表示）
+  return (
+    <div
+      onClick={handleClick}
+      onContextMenu={(e) => e.preventDefault()}
+      title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
+      className={`relative w-[184px] rounded-xl bg-white border-2 px-3 py-2 shadow-xs cursor-pointer select-none transition-all ${
+        isHighlighted
+          ? 'ring-3 ring-indigo-600 border-indigo-600 shadow-md'
+          : 'hover:border-slate-400'
+      } ${opacityClass}`}
+      style={{
+        borderColor: isHighlighted ? '#4f46e5' : `${person.color}99`,
+      }}
+      data-testid={`person-node-${person.id}`}
+    >
+      <FourSideHandles />
+
+      {/* 上段：アイコン＋名前 */}
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="relative shrink-0">
+          <AvatarBadge
+            name={resolved.effectiveDisplayName}
+            color={person.color}
+            iconDataUrl={resolved.iconDataUrl}
+            preset={resolved.avatarPreset}
+            size="sm"
+          />
+          {resolved.linkStatus === 'linked_public' && (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white ring-1 ring-white"
+              title="公開プロフィール"
+            >
+              <UserCheck size={8} />
+            </span>
+          )}
+          {resolved.linkStatus === 'linked_private' && (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white ring-1 ring-white"
+              title="非公開プロフィール"
+            >
+              <Lock size={8} />
+            </span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-extrabold text-slate-900 truncate">
+            {resolved.effectiveDisplayName}
+          </div>
+        </div>
+      </div>
+
+      {/* 下段：名前のすぐ下に「ここでのロール」を表示 */}
+      <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex flex-wrap gap-1">
+        {rolesHere.length > 0 ? (
+          rolesHere.map((r) => (
+            <span
+              key={r.id}
+              className="inline-block rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-tight"
+              style={{ backgroundColor: r.color }}
+            >
+              {r.name}
+            </span>
+          ))
+        ) : (
+          <span className="text-[10px] font-semibold text-slate-400">役割未設定（メンバー）</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// 2. 人物図（人中心 / peopleモード）専用：
+//    人名の「右脇」に所属しているグループとロールをずらっと並べて表示
+// ============================================================================
 export interface PersonNodeData extends Record<string, unknown> {
   person: Person;
   resolved: ResolvedPersonView;
@@ -26,411 +229,350 @@ export interface PersonNodeData extends Record<string, unknown> {
   nodeStyle: NodeDisplayStyle;
   isHighlighted: boolean;
   isDimmed: boolean;
-  onSelectPerson: (personId: string) => void;
+  onFocusPerson: (personId: string) => void;
+  onOpenPerson: (personId: string) => void;
 }
 
-export interface GroupNodeData extends Record<string, unknown> {
-  group: Group;
-  parentGroupName: string | null;
-  iconDataUrl: string | null;
-  directCount: number;
-  totalCount: number;
-  roleSummary: { roleName: string; roleColor: string; count: number }[];
-  isCollapsed: boolean;
-  hasChildren: boolean;
-  isHighlighted: boolean;
-  isDimmed: boolean;
-  onSelectGroup: (groupId: string) => void;
-  onToggleCollapse: (groupId: string) => void;
-}
-
-/**
- * 人物ノード（ツールバーの「カード表示 / コンパクト表示」に応じて2種類のスタイルで描画）
- * ロール（全体ロールおよび所属先ごとのロール）が主役として一目で分かるデザイン
- */
 export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
   const d = data as unknown as PersonNodeData;
-  const { person, resolved, globalRoles, groupMemberships, nodeStyle, isHighlighted, isDimmed } = d;
+  const { person, resolved, globalRoles, groupMemberships, isHighlighted, isDimmed } = d;
+
+  const handleClick = useFocusAndOpenGesture(
+    () => d.onFocusPerson(person.id),
+    () => d.onOpenPerson(person.id)
+  );
 
   const opacityClass = isDimmed ? 'opacity-30' : 'opacity-100';
-  const ringClass = isHighlighted
-    ? 'ring-3 ring-indigo-500 shadow-xl scale-[1.02]'
-    : 'hover:shadow-md';
 
-  // スタイルB: コンパクト表示（参考画像に近い丸アイコン＋ピル型名前＋主要ロールバッジ）
-  if (nodeStyle === 'compact') {
-    return (
-      <div
-        onClick={(e) => {
-          e.stopPropagation();
-          d.onSelectPerson(person.id);
-        }}
-        className={`group relative flex flex-col items-center cursor-pointer transition-all duration-150 ${opacityClass}`}
-        data-testid={`person-node-${person.id}`}
-      >
-        <Handle
-          type="target"
-          position={Position.Top}
-          className="!w-2.5 !h-2.5 !bg-slate-400 !border-white"
-        />
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="left-target"
-          className="!w-2.5 !h-2.5 !bg-slate-400 !border-white"
-        />
-
-        <div className="relative">
-          <AvatarBadge
-            name={resolved.effectiveDisplayName}
-            color={person.color}
-            iconDataUrl={resolved.iconDataUrl}
-            preset={resolved.avatarPreset}
-            size="lg"
-            className={`transition-transform ${
-              isHighlighted ? 'ring-3 ring-indigo-500 scale-105' : 'group-hover:scale-105'
-            }`}
-          />
-          {resolved.linkStatus === 'linked_public' && (
-            <span
-              className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white ring-2 ring-white"
-              title="公開プロフィール連携済"
-            >
-              <UserCheck size={10} />
-            </span>
-          )}
-          {resolved.linkStatus === 'linked_private' && (
-            <span
-              className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-white ring-2 ring-white"
-              title="非公開プロフィール"
-            >
-              <Lock size={9} />
-            </span>
-          )}
-        </div>
-
-        {/* ピル型名前ラベル */}
-        <div className="mt-1.5 rounded-full bg-white px-3 py-0.5 text-xs font-extrabold text-slate-800 shadow-sm border border-slate-200 whitespace-nowrap">
-          {resolved.effectiveDisplayName}
-        </div>
-
-        {/* ロール強調バッジ（メイン表示） */}
-        <div className="mt-1 flex flex-wrap justify-center gap-1 max-w-[190px]">
-          {globalRoles.map((r) => (
-            <span
-              key={r.id}
-              className="rounded-md px-2 py-0.5 text-[10px] font-extrabold text-white shadow-2xs"
-              style={{ backgroundColor: r.color }}
-            >
-              {r.name}
-            </span>
-          ))}
-          {groupMemberships.map((gm) =>
-            gm.roles.map((r) => (
-              <span
-                key={`${gm.groupId}-${r.id}`}
-                className="rounded-md px-1.5 py-0.5 text-[10px] font-bold border bg-white/95"
-                style={{ borderColor: gm.groupColor, color: gm.groupColor }}
-              >
-                {gm.groupName}: {r.name}
-              </span>
-            ))
-          )}
-        </div>
-
-        <Handle
-          type="source"
-          position={Position.Bottom}
-          className="!w-2.5 !h-2.5 !bg-indigo-500 !border-white"
-        />
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="right-source"
-          className="!w-2.5 !h-2.5 !bg-indigo-500 !border-white"
-        />
-      </div>
-    );
-  }
-
-  // スタイルA: リッチカード表示（デフォルト：丸アイコン＋名前＋全体ロール＋所属グループ別ロール一覧）
   return (
     <div
-      onClick={(e) => {
-        e.stopPropagation();
-        d.onSelectPerson(person.id);
+      onClick={handleClick}
+      title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
+      className={`relative rounded-2xl bg-white border-2 shadow-sm transition-all cursor-pointer select-none ${
+        isHighlighted ? 'ring-3 ring-indigo-500 shadow-xl' : 'hover:shadow-md'
+      } ${opacityClass}`}
+      style={{
+        borderColor: isHighlighted ? '#4f46e5' : person.color,
+        minWidth: 310,
+        maxWidth: 420,
       }}
-      className={`w-[236px] rounded-2xl bg-white border-2 shadow-sm transition-all duration-150 cursor-pointer overflow-hidden ${ringClass} ${opacityClass}`}
-      style={{ borderColor: isHighlighted ? '#4f46e5' : `${person.color}88` }}
       data-testid={`person-node-${person.id}`}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!w-3 !h-3 !bg-slate-500 !border-2 !border-white"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left-target"
-        className="!w-3 !h-3 !bg-slate-500 !border-2 !border-white"
-      />
+      <FourSideHandles />
 
-      {/* 上部カラーバー＆人物ヘッダー */}
-      <div
-        className="px-3 py-2.5 flex items-center gap-2.5 border-b border-slate-100"
-        style={{ background: `linear-gradient(135deg, ${person.color}18, #ffffff)` }}
-      >
-        <div className="relative">
-          <AvatarBadge
-            name={resolved.effectiveDisplayName}
-            color={person.color}
-            iconDataUrl={resolved.iconDataUrl}
-            preset={resolved.avatarPreset}
-            size="md"
-          />
-          {resolved.linkStatus === 'linked_public' && (
-            <span
-              className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white ring-1 ring-white"
-              title="公開プロフィール"
-            >
-              <UserCheck size={9} />
-            </span>
-          )}
-          {resolved.linkStatus === 'linked_private' && (
-            <span
-              className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white ring-1 ring-white"
-              title="非公開プロフィール"
-            >
-              <Lock size={8} />
-            </span>
-          )}
-        </div>
+      {/* 左側に人物アイコン＆名前、その右脇に所属グループとロールをずらっと並べる横並び構造 */}
+      <div className="flex items-stretch rounded-[14px] overflow-hidden">
+        <div
+          className="w-[138px] shrink-0 p-3 flex flex-col items-center justify-center text-center border-r border-slate-200"
+          style={{ background: `linear-gradient(155deg, ${person.color}18, #ffffff)` }}
+        >
+          <div className="relative">
+            <AvatarBadge
+              name={resolved.effectiveDisplayName}
+              color={person.color}
+              iconDataUrl={resolved.iconDataUrl}
+              preset={resolved.avatarPreset}
+              size="md"
+            />
+            {resolved.linkStatus === 'linked_public' && (
+              <span
+                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white ring-1 ring-white"
+                title="公開プロフィール"
+              >
+                <UserCheck size={9} />
+              </span>
+            )}
+            {resolved.linkStatus === 'linked_private' && (
+              <span
+                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white ring-1 ring-white"
+                title="非公開プロフィール"
+              >
+                <Lock size={8} />
+              </span>
+            )}
+          </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-extrabold text-slate-900 truncate">
+          <div className="mt-1.5 text-xs font-extrabold text-slate-900 leading-snug break-words w-full">
             {resolved.effectiveDisplayName}
           </div>
-          {/* 全体ロール強調表示 */}
-          {globalRoles.length > 0 ? (
-            <div className="flex flex-wrap gap-1 mt-1">
+
+          {globalRoles.length > 0 && (
+            <div className="mt-1 flex flex-wrap justify-center gap-0.5">
               {globalRoles.map((r) => (
                 <span
                   key={r.id}
-                  className="inline-block rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white leading-none"
+                  className="rounded px-1.5 py-0.5 text-[9px] font-bold text-white leading-none"
                   style={{ backgroundColor: r.color }}
                 >
                   {r.name}
                 </span>
               ))}
             </div>
+          )}
+        </div>
+
+        {/* 右脇カラム：所属しているグループとそこでのロールをずらっと一覧表示 */}
+        <div className="flex-1 p-2.5 bg-white flex flex-col justify-center space-y-1.5">
+          <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+            所属グループ / 役割（ロール）
+          </div>
+          {groupMemberships.length > 0 ? (
+            <div className="space-y-1.5">
+              {groupMemberships.map((gm) => (
+                <div
+                  key={gm.groupId}
+                  className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 border border-slate-200 px-2.5 py-1.5"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: gm.groupColor }}
+                    />
+                    <span className="text-[11px] font-extrabold text-slate-800 truncate">
+                      {gm.groupName}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 justify-end shrink-0">
+                    {gm.roles.length > 0 ? (
+                      gm.roles.map((r) => (
+                        <span
+                          key={r.id}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white leading-none"
+                          style={{ backgroundColor: r.color }}
+                        >
+                          {r.name}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-semibold">メンバー</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
-            <span className="text-[10px] text-slate-400">全体ロール未設定</span>
+            <div className="text-[11px] text-slate-400 py-1">所属グループなし</div>
           )}
         </div>
       </div>
-
-      {/* 所属グループとグループ内ロール一覧（メイン表示） */}
-      <div className="p-2.5 space-y-1.5 bg-white">
-        {groupMemberships.length > 0 ? (
-          groupMemberships.map((gm) => (
-            <div
-              key={gm.groupId}
-              className="rounded-lg bg-slate-50 border border-slate-200/80 px-2 py-1.5 flex flex-col gap-1"
-            >
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: gm.groupColor }}
-                />
-                <span className="text-[10px] font-bold text-slate-700 truncate">
-                  {gm.groupName}
-                </span>
-              </div>
-              {gm.roles.length > 0 && (
-                <div className="flex flex-wrap gap-1 pl-3.5">
-                  {gm.roles.map((r) => (
-                    <span
-                      key={r.id}
-                      className="rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white leading-none"
-                      style={{ backgroundColor: r.color }}
-                    >
-                      {r.name}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))
-        ) : (
-          <div className="text-[10px] text-slate-400 text-center py-0.5">所属グループなし</div>
-        )}
-      </div>
-
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right-source"
-        className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white"
-      />
     </div>
   );
 };
 
-/**
- * 大グループ・小グループノード
- * - 直接所属人数と配下を含む人数（重複排除済み）を表示
- * - 大グループは展開・折りたたみボタン付き
- * - グループ内で割り当てられている主要ロール集計もバッジ表示
- */
+// ============================================================================
+// 3. 大グループ・小グループの入れ子コンテナ枠ノード
+// ============================================================================
+export interface GroupContainerNodeData extends Record<string, unknown> {
+  group: Group;
+  iconDataUrl: string | null;
+  directCount: number;
+  totalCount: number;
+  width: number;
+  height: number;
+  viewMode: 'mixed' | 'groups';
+  embeddedMembers: {
+    personId: string;
+    displayName: string;
+    personColor: string;
+    iconDataUrl: string | null;
+    avatarPreset: string;
+    roles: TagItem[];
+  }[];
+  isCollapsed: boolean;
+  hasChildren: boolean;
+  isDropTarget: boolean;
+  isCopyDropTarget: boolean;
+  isHighlighted: boolean;
+  isDimmed: boolean;
+  onFocusGroup: (groupId: string) => void;
+  onOpenGroup: (groupId: string) => void;
+  onFocusPerson: (personId: string) => void;
+  onOpenPerson: (personId: string) => void;
+  onToggleCollapse: (groupId: string) => void;
+}
+
 export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
-  const d = data as unknown as GroupNodeData;
+  const d = data as unknown as GroupContainerNodeData;
   const {
     group,
-    parentGroupName,
     iconDataUrl,
     directCount,
     totalCount,
-    roleSummary,
+    width,
+    height,
+    viewMode,
+    embeddedMembers,
     isCollapsed,
     hasChildren,
+    isDropTarget,
+    isCopyDropTarget,
     isHighlighted,
     isDimmed,
   } = d;
 
+  const handleGroupClick = useFocusAndOpenGesture(
+    () => d.onFocusGroup(group.id),
+    () => d.onOpenGroup(group.id)
+  );
+
+  const lastMemberTapRef = useRef<{ personId: string; time: number }>({
+    personId: '',
+    time: 0,
+  });
+
+  const handleMemberRowClick = (e: React.MouseEvent, personId: string) => {
+    e.stopPropagation();
+    const now = Date.now();
+    const prev = lastMemberTapRef.current;
+    lastMemberTapRef.current = { personId, time: now };
+
+    if (prev.personId === personId && now - prev.time < 330) {
+      d.onOpenPerson(personId);
+    } else {
+      d.onFocusPerson(personId);
+    }
+  };
+
   const isLarge = group.kind === 'large';
-  const opacityClass = isDimmed ? 'opacity-30' : 'opacity-100';
+  const opacityClass = isDimmed ? 'opacity-35' : 'opacity-100';
+
+  const dropHighlightClass = isCopyDropTarget
+    ? 'ring-4 ring-emerald-500 bg-emerald-50/40'
+    : isDropTarget
+    ? 'ring-4 ring-indigo-500 bg-indigo-50/40'
+    : isHighlighted
+    ? 'ring-3 ring-indigo-500'
+    : '';
 
   return (
     <div
-      onClick={(e) => {
-        e.stopPropagation();
-        d.onSelectGroup(group.id);
-      }}
-      className={`rounded-2xl bg-white transition-all duration-150 cursor-pointer overflow-hidden ${
-        isLarge ? 'w-[272px] border-2 shadow-md' : 'w-[244px] border-2 shadow-sm'
-      } ${isHighlighted ? 'ring-3 ring-indigo-500 scale-[1.02]' : 'hover:shadow-lg'} ${opacityClass}`}
+      onClick={handleGroupClick}
+      title="クリックでフォーカス / ダブルクリックでグループ詳細を開く"
       style={{
+        width,
+        height,
         borderColor: group.color,
-        backgroundColor: isLarge ? '#ffffff' : '#fcfdff',
+        backgroundColor: isLarge ? `${group.color}0A` : '#ffffff',
       }}
+      className={`relative rounded-xl border-2 transition-colors select-none ${
+        isLarge ? 'shadow-sm' : 'shadow-2xs'
+      } ${dropHighlightClass} ${opacityClass}`}
       data-testid={`group-node-${group.id}`}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!w-3 !h-3 !bg-slate-600 !border-2 !border-white"
-      />
+      <FourSideHandles />
 
-      {/* ヘッダー */}
+      {/* コンテナ枠の左上ヘッダーバー */}
       <div
-        className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+        className="flex items-center justify-between px-3 py-1.5 border-b rounded-t-[10px]"
         style={{
-          background: isLarge
-            ? `linear-gradient(135deg, ${group.color}, ${group.color}dd)`
-            : `linear-gradient(135deg, ${group.color}22, #ffffff)`,
+          borderColor: `${group.color}44`,
+          backgroundColor: isLarge ? `${group.color}18` : `${group.color}12`,
         }}
       >
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <AvatarBadge
             name={group.name}
             color={group.color}
             iconDataUrl={iconDataUrl}
             preset={group.avatarPreset}
-            size="sm"
+            size="xs"
             shape="rounded"
           />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1">
-              <span
-                className={`text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded leading-none ${
-                  isLarge
-                    ? 'bg-white/25 text-white'
-                    : 'text-white'
-                }`}
-                style={!isLarge ? { backgroundColor: group.color } : undefined}
-              >
-                {isLarge ? '大グループ' : '小グループ'}
-              </span>
-              {parentGroupName && (
-                <span className="text-[10px] font-semibold text-slate-500 truncate">
-                  ({parentGroupName})
-                </span>
-              )}
-            </div>
-            <div
-              className={`text-xs font-extrabold truncate mt-1 ${
-                isLarge ? 'text-white' : 'text-slate-900'
-              }`}
-            >
-              {group.name}
-            </div>
-          </div>
+          <span className="text-xs font-extrabold text-slate-900 truncate">{group.name}</span>
+          <span
+            className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none shrink-0"
+            style={{ backgroundColor: group.color }}
+          >
+            {isLarge ? '大グループ' : '小グループ'}
+          </span>
         </div>
 
-        {/* 大グループの折りたたみ・展開ボタン */}
-        {isLarge && hasChildren && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              d.onToggleCollapse(group.id);
-            }}
-            className="rounded-lg bg-white/20 hover:bg-white/35 p-1 text-white transition shrink-0"
-            title={isCollapsed ? '配下小グループを展開' : '配下小グループを折りたたむ'}
-            data-testid={`toggle-collapse-${group.id}`}
-          >
-            {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-          </button>
-        )}
-      </div>
-
-      {/* 人数とロール内訳 */}
-      <div className="p-3 space-y-2 bg-white">
-        <div className="flex items-center justify-between text-[11px]">
-          <span className="text-slate-600 font-semibold flex items-center gap-1">
-            <Users size={12} className="text-slate-400" />
-            直接所属: <strong className="text-slate-900">{directCount}人</strong>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200">
+            <Users size={11} />
+            直下 {directCount}人{isLarge ? ` / 配下計 ${totalCount}人` : ''}
           </span>
-          {isLarge && (
-            <span className="rounded-full bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-[10px] font-extrabold text-indigo-800">
-              配下含む計: {totalCount}人
-            </span>
+
+          {isLarge && hasChildren && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                d.onToggleCollapse(group.id);
+              }}
+              className="rounded bg-white/80 hover:bg-white p-0.5 text-slate-700 border border-slate-300"
+              title={isCollapsed ? '小グループを展開' : '小グループを折りたたむ'}
+              data-testid={`toggle-collapse-${group.id}`}
+            >
+              {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            </button>
           )}
         </div>
-
-        {roleSummary.length > 0 && (
-          <div className="flex flex-wrap gap-1 pt-0.5">
-            {roleSummary.slice(0, 4).map((rs, idx) => (
-              <span
-                key={idx}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-white"
-                style={{ backgroundColor: rs.roleColor }}
-              >
-                {rs.roleName}
-                <span className="opacity-85">×{rs.count}</span>
-              </span>
-            ))}
-          </div>
-        )}
-
-        {isLarge && isCollapsed && (
-          <div className="rounded-lg bg-amber-50 border border-amber-200 px-2 py-1 text-[10px] font-bold text-amber-800 text-center">
-            配下の小グループを折りたたみ中
-          </div>
-        )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white"
-      />
+      {/* ドロップ操作中のガイド表示 */}
+      {(isDropTarget || isCopyDropTarget) && (
+        <div
+          className={`absolute top-10 right-3 z-20 rounded-lg px-2.5 py-1 text-[11px] font-extrabold text-white shadow-md ${
+            isCopyDropTarget ? 'bg-emerald-600' : 'bg-indigo-600'
+          }`}
+        >
+          {isCopyDropTarget
+            ? `＋「${group.name}」へ所属をコピー（複数所属）`
+            : `→「${group.name}」へ所属を移動`}
+        </div>
+      )}
+
+      {/* グループ図（グループ中心 / groupsモード）のとき：直下メンバーとロールを枠内にずらっと表示 */}
+      {viewMode === 'groups' && (
+        <div className="p-3 space-y-1.5">
+          <div className="text-[10px] font-extrabold text-slate-500">
+            {isLarge ? '大グループ直下メンバー・役割' : '小グループ所属メンバー・役割'}
+          </div>
+          {embeddedMembers.length > 0 ? (
+            <div className="grid grid-cols-1 gap-1.5">
+              {embeddedMembers.map((m) => (
+                <div
+                  key={m.personId}
+                  onClick={(e) => handleMemberRowClick(e, m.personId)}
+                  title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
+                  className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-200 px-2.5 py-1.5 shadow-2xs hover:border-indigo-400 cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AvatarBadge
+                      name={m.displayName}
+                      color={m.personColor}
+                      iconDataUrl={m.iconDataUrl}
+                      preset={m.avatarPreset}
+                      size="xs"
+                    />
+                    <span className="text-xs font-extrabold text-slate-900 truncate">
+                      {m.displayName}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 justify-end shrink-0">
+                    {m.roles.length > 0 ? (
+                      m.roles.map((r) => (
+                        <span
+                          key={r.id}
+                          className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none"
+                          style={{ backgroundColor: r.color }}
+                        >
+                          {r.name}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-semibold">メンバー</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-400 py-1">直下メンバーなし</div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
 import type { ProfileLink } from '../../types/domain';
-import { resolvePersonView } from '../../utils/securityGuards';
+import { canEditPersonCard, resolvePersonView } from '../../utils/securityGuards';
 import { getSafeCharCount } from '../../utils/validation';
 import { AvatarBadge, AVATAR_PRESET_OPTIONS } from '../common/AvatarBadge';
 import { IconCropperModal } from './IconCropperModal';
@@ -110,6 +110,61 @@ export const PersonProfileModal: React.FC<PersonProfileModalProps> = ({
   const skills = person.skillIds
     .map((sid) => currentBundle.project.skillTags.find((t) => t.id === sid))
     .filter(Boolean);
+
+  // この人物が関わるすべての関係性（人物↔人物、人物↔グループの両方をユーザー情報として表示）
+  const relatedRelationships = currentBundle.relationships
+    .filter(
+      (r) =>
+        (r.sourceKind === 'person' && r.sourceId === person.id) ||
+        (r.targetKind === 'person' && r.targetId === person.id)
+    )
+    .map((r) => {
+      const isSource = r.sourceKind === 'person' && r.sourceId === person.id;
+      const otherKind = isSource ? r.targetKind : r.sourceKind;
+      const otherId = isSource ? r.targetId : r.sourceId;
+
+      let otherName = '不明';
+      let otherColor = '#64748b';
+      if (otherKind === 'person') {
+        const op = currentBundle.people.find((p) => p.id === otherId);
+        if (op) {
+          const opResolved = resolvePersonView(
+            op,
+            actor,
+            userProfiles,
+            profileIcons,
+            currentBundle.projectIcons
+          );
+          otherName = opResolved.effectiveDisplayName;
+          otherColor = op.color;
+        }
+      } else {
+        const og = currentBundle.groups.find((g) => g.id === otherId);
+        if (og) {
+          otherName = og.name;
+          otherColor = og.color;
+        }
+      }
+
+      const directionSymbol =
+        r.direction === 'bidirectional'
+          ? '⇄'
+          : r.direction === 'none'
+          ? '―'
+          : isSource
+          ? '→'
+          : '←';
+
+      return {
+        rel: r,
+        isSource,
+        otherKind,
+        otherId,
+        otherName,
+        otherColor,
+        directionSymbol,
+      };
+    });
 
   const activeInvitation = person.activeInvitationId
     ? invitations.find((i) => i.id === person.activeInvitationId && i.status === 'pending')
@@ -247,18 +302,21 @@ export const PersonProfileModal: React.FC<PersonProfileModalProps> = ({
               </button>
             )}
 
-            {permissions.isEditor && onEditPersonProjectFields && !isEditingSelf && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onEditPersonProjectFields(person.id);
-                }}
-                className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                プロジェクト設定編集
-              </button>
-            )}
+            {canEditPersonCard(actor, person, currentBundle) &&
+              onEditPersonProjectFields &&
+              !isEditingSelf && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onEditPersonProjectFields(person.id);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  data-testid="open-person-editor-from-profile-btn"
+                >
+                  {permissions.isEditor ? 'プロジェクト設定・所属編集' : '所属・ロール・カード編集'}
+                </button>
+              )}
 
             <button
               type="button"
@@ -670,6 +728,53 @@ export const PersonProfileModal: React.FC<PersonProfileModalProps> = ({
             ) : (
               <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-400">
                 所属しているグループはありません
+              </div>
+            )}
+          </div>
+
+          {/* 関係性一覧（人物間および「グループ-人」の関係性をユーザー情報として表示） */}
+          <div className="space-y-2.5">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+              <Link2 size={14} className="text-indigo-600" />
+              登録されている関係性（人物・グループとの関係：{relatedRelationships.length}件）
+            </h3>
+            {relatedRelationships.length > 0 ? (
+              <div className="grid grid-cols-1 gap-2">
+                {relatedRelationships.map(
+                  ({ rel, otherKind, otherName, otherColor, directionSymbol }) => (
+                    <div
+                      key={rel.id}
+                      className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 flex items-center justify-between gap-3 flex-wrap"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                        <span className="text-slate-600">{resolved.effectiveDisplayName}</span>
+                        <span
+                          className="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-extrabold text-white"
+                          style={{ backgroundColor: rel.color || '#475569' }}
+                        >
+                          {directionSymbol} {rel.label}
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: otherColor }}
+                          />
+                          <span>{otherName}</span>
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                            {otherKind === 'group' ? 'グループ' : '人物'}
+                          </span>
+                        </span>
+                      </div>
+                      {rel.memo && (
+                        <span className="text-[11px] text-slate-500">{rel.memo}</span>
+                      )}
+                    </div>
+                  )
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 p-3.5 text-center text-xs text-slate-400">
+                登録されている関係性はありません
               </div>
             )}
           </div>

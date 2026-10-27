@@ -13,20 +13,24 @@ import {
   Lock,
   RefreshCw,
   ShieldCheck,
+  UserPlus,
   Users,
   WifiOff,
   X,
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
+import { canCreateSelfPerson } from '../../utils/securityGuards';
 
 interface TopHeaderBarProps {
   onOpenAdminSettings: (tab?: 'project' | 'members' | 'yaml' | 'testUsers') => void;
   onOpenSelfProfileModal: (personId: string) => void;
+  onOpenSelfPersonCreator?: () => void;
 }
 
 export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
   onOpenAdminSettings,
   onOpenSelfProfileModal,
+  onOpenSelfPersonCreator,
 }) => {
   const {
     projectsMap,
@@ -114,7 +118,7 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
                     : permissions.isEditor
                     ? 'bg-sky-100 text-sky-800'
                     : actor.uid
-                    ? 'bg-slate-200 text-slate-700'
+                    ? 'bg-emerald-100 text-emerald-900'
                     : 'bg-slate-100 text-slate-500'
                 }`}
                 data-testid="current-permission-badge"
@@ -125,8 +129,8 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
                   : permissions.isEditor
                   ? '権限: 編集者'
                   : actor.uid
-                  ? '権限: 閲覧＋本人プロフィール編集のみ'
-                  : '権限: 未ログイン閲覧'}
+                  ? '権限: 一般人（ログインあり）'
+                  : '権限: 一般人（ログイン無し・閲覧のみ）'}
               </span>
             </div>
           )}
@@ -192,15 +196,28 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
           </button>
 
           {/* 自分の本人プロフィール直通ボタン（自分にひも付いた人物がある場合） */}
-          {myLinkedPerson && (
+          {myLinkedPerson ? (
             <button
               type="button"
               onClick={() => onOpenSelfProfileModal(myLinkedPerson.id)}
               className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
               data-testid="header-my-profile-btn"
             >
-              本人プロフィール ({myLinkedPerson.displayName})
+              自分のカード・プロフィール ({myLinkedPerson.displayName})
             </button>
+          ) : (
+            currentBundle &&
+            canCreateSelfPerson(actor, currentBundle) &&
+            onOpenSelfPersonCreator && (
+              <button
+                type="button"
+                onClick={onOpenSelfPersonCreator}
+                className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-2xs"
+                data-testid="header-create-self-person-btn"
+              >
+                <UserPlus size={13} /> 自分の人物カードを追加
+              </button>
+            )
           )}
 
           {/* 管理者専用：YAML退避・取込ショートカット */}
@@ -217,7 +234,7 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
             </button>
           )}
 
-          {/* マルチユーザー検証用：アカウント切り替えセレクタ */}
+          {/* マルチユーザー検証用：アカウント切り替えセレクタ（メールアドレスは管理者のみ表示） */}
           <div className="flex items-center gap-1.5 rounded-xl bg-slate-900 text-white px-2.5 py-1 shadow-xs">
             <Users size={13} className="text-indigo-400 shrink-0" />
             <select
@@ -230,22 +247,25 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
               title="テスト用操作ユーザーを切り替え"
               data-testid="test-user-switcher"
             >
-              <option value="__anonymous__">👤 未ログイン（ゲスト閲覧者）</option>
+              <option value="__anonymous__">👤 一般人（ログイン無し・閲覧のみ）</option>
               {testUsers.map((u) => (
                 <option key={u.uid} value={u.uid}>
-                  🔑 {u.displayName} ({u.email})
+                  🔑 {u.displayName}
+                  {permissions.isAdmin ? ` (${u.email})` : ''}
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              onClick={() => onOpenAdminSettings('testUsers')}
-              className="rounded bg-indigo-600 hover:bg-indigo-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white shrink-0"
-              title="テスト用ユーザーを新規作成・管理"
-              data-testid="open-test-users-modal-btn"
-            >
-              ＋作成
-            </button>
+            {permissions.isAdmin && (
+              <button
+                type="button"
+                onClick={() => onOpenAdminSettings('testUsers')}
+                className="rounded bg-indigo-600 hover:bg-indigo-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white shrink-0"
+                title="テスト用ユーザーを新規作成・管理（管理者のみ）"
+                data-testid="open-test-users-modal-btn"
+              >
+                ＋作成
+              </button>
+            )}
           </div>
         </div>
       </header>

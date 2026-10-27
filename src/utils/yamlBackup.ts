@@ -233,6 +233,7 @@ export function parseAndValidateYamlBackup(
       warnings.push(`存在しない対象を参照していた関係線「${r.label || r.id}」を除外しました。`);
       continue;
     }
+    const validSides = new Set(['top', 'right', 'bottom', 'left']);
     validRelationships.push({
       id: r.id,
       projectId: targetProjectId,
@@ -240,6 +241,14 @@ export function parseAndValidateYamlBackup(
       sourceId: r.sourceId,
       targetKind: r.targetKind === 'group' ? 'group' : 'person',
       targetId: r.targetId,
+      sourceHandle:
+        typeof r.sourceHandle === 'string' && validSides.has(r.sourceHandle)
+          ? (r.sourceHandle as Relationship['sourceHandle'])
+          : null,
+      targetHandle:
+        typeof r.targetHandle === 'string' && validSides.has(r.targetHandle)
+          ? (r.targetHandle as Relationship['targetHandle'])
+          : null,
       label: typeof r.label === 'string' && r.label.trim() ? r.label.slice(0, 80) : '関係',
       tagIds: Array.isArray(r.tagIds) ? r.tagIds : [],
       direction:

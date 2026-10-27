@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderGit2,
+  Link2,
   Pencil,
   Users,
   X,
@@ -121,6 +122,60 @@ export const GroupDetailModal: React.FC<GroupDetailModalProps> = ({
       members: childMembers,
     };
   });
+
+  // このグループが関わる関係性（グループ↔グループ、グループ↔人物）
+  const relatedRelationships = currentBundle.relationships
+    .filter(
+      (r) =>
+        (r.sourceKind === 'group' && r.sourceId === group.id) ||
+        (r.targetKind === 'group' && r.targetId === group.id)
+    )
+    .map((r) => {
+      const isSource = r.sourceKind === 'group' && r.sourceId === group.id;
+      const otherKind = isSource ? r.targetKind : r.sourceKind;
+      const otherId = isSource ? r.targetId : r.sourceId;
+
+      let otherName = '不明';
+      let otherColor = '#64748b';
+      if (otherKind === 'person') {
+        const op = currentBundle.people.find((p) => p.id === otherId);
+        if (op) {
+          const opResolved = resolvePersonView(
+            op,
+            actor,
+            userProfiles,
+            profileIcons,
+            currentBundle.projectIcons
+          );
+          otherName = opResolved.effectiveDisplayName;
+          otherColor = op.color;
+        }
+      } else {
+        const og = currentBundle.groups.find((g) => g.id === otherId);
+        if (og) {
+          otherName = og.name;
+          otherColor = og.color;
+        }
+      }
+
+      const directionSymbol =
+        r.direction === 'bidirectional'
+          ? '⇄'
+          : r.direction === 'none'
+          ? '―'
+          : isSource
+          ? '→'
+          : '←';
+
+      return {
+        rel: r,
+        otherKind,
+        otherId,
+        otherName,
+        otherColor,
+        directionSymbol,
+      };
+    });
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto">
@@ -370,6 +425,53 @@ export const GroupDetailModal: React.FC<GroupDetailModalProps> = ({
               ))}
             </div>
           )}
+
+          {/* このグループが関わる関係性（グループ間・グループと人物の関係性） */}
+          <div className="space-y-2.5 pt-2">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+              <Link2 size={14} className="text-indigo-600" />
+              登録されている関係性（グループ・人物との関係：{relatedRelationships.length}件）
+            </h3>
+            {relatedRelationships.length > 0 ? (
+              <div className="grid grid-cols-1 gap-2">
+                {relatedRelationships.map(
+                  ({ rel, otherKind, otherName, otherColor, directionSymbol }) => (
+                    <div
+                      key={rel.id}
+                      className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 flex items-center justify-between gap-3 flex-wrap"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                        <span className="text-slate-600">{group.name}</span>
+                        <span
+                          className="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-extrabold text-white"
+                          style={{ backgroundColor: rel.color || '#475569' }}
+                        >
+                          {directionSymbol} {rel.label}
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: otherColor }}
+                          />
+                          <span>{otherName}</span>
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                            {otherKind === 'group' ? 'グループ' : '人物'}
+                          </span>
+                        </span>
+                      </div>
+                      {rel.memo && (
+                        <span className="text-[11px] text-slate-500">{rel.memo}</span>
+                      )}
+                    </div>
+                  )
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 p-3.5 text-center text-xs text-slate-400">
+                登録されている関係性はありません
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
