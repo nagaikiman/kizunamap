@@ -1085,10 +1085,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const updateDiagram = useCallback(
     async (diagramId: string, patch: Partial<Diagram>) => {
-      if (!permissions.isEditor) {
-        throw new Error('PERMISSION_DENIED: 図の更新にはプロジェクト編集権限が必要です。');
+      const isMetadataEdit =
+        patch.name !== undefined || patch.description !== undefined;
+      if (isMetadataEdit && !permissions.isEditor) {
+        throw new Error('PERMISSION_DENIED: 図のタイトル変更にはプロジェクト編集権限が必要です。');
       }
-      await commitStoreUpdate((prev) => {
+
+      const applyPatch = (prev: PersistedLocalStore): PersistedLocalStore => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
         return {
@@ -1105,7 +1108,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             },
           },
         };
-      });
+      };
+
+      // 未ログイン・閲覧のみのユーザーは手元の画面表示のみ切り替え（サーバーへは保存しない）
+      if (!permissions.isEditor) {
+        setStore(applyPatch);
+        return;
+      }
+
+      await commitStoreUpdate(applyPatch);
     },
     [commitStoreUpdate, currentProjectId, permissions.isEditor]
   );
@@ -1288,7 +1299,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const toggleGroupCollapse = useCallback(
     async (diagramId: string, largeGroupId: string) => {
-      await commitStoreUpdate((prev) => {
+      const applyToggle = (prev: PersistedLocalStore): PersistedLocalStore => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
         return {
@@ -1311,9 +1322,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             },
           },
         };
-      });
+      };
+
+      if (!permissions.isEditor) {
+        setStore(applyToggle);
+        return;
+      }
+
+      await commitStoreUpdate(applyToggle);
     },
-    [commitStoreUpdate, currentProjectId]
+    [commitStoreUpdate, currentProjectId, permissions.isEditor]
   );
 
   // グループ追加・更新（二階層整合性＆グループアイコン保存対応）
