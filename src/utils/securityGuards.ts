@@ -21,7 +21,8 @@ export interface AuthActor {
 /**
  * プロジェクトに対するユーザーの権限判定
  * - グループ内の役割（「管理者」「責任者」など）は一切使用しない
- * - オーナーUID または 確認済みメールアドレスの editorEmails ACL のみで判定
+ * - オーナーUID または 確認済みメールアドレスの editorEmails ACL（管理者メンバーリスト）で判定
+ * - 編集者と管理者は「管理者」として同一権限に統合
  */
 export function evaluateProjectAccess(
   actor: AuthActor,
@@ -31,8 +32,10 @@ export function evaluateProjectAccess(
   isEditor: boolean;
   canRead: boolean;
 } {
-  const isAdmin = Boolean(actor.uid && bundle.project.ownerUid === actor.uid);
-  const isAllowedEditor = Boolean(
+  const isOwner = Boolean(
+    actor.isOperator || (actor.uid && bundle.project.ownerUid === actor.uid)
+  );
+  const isAllowedManager = Boolean(
     actor.uid &&
       actor.email &&
       actor.emailVerified &&
@@ -40,7 +43,8 @@ export function evaluateProjectAccess(
         (record) => record.email.toLowerCase() === actor.email!.toLowerCase() && record.active
       )
   );
-  const isEditor = isAdmin || isAllowedEditor;
+  const isAdmin = isOwner || isAllowedManager;
+  const isEditor = isAdmin;
   const canRead = bundle.project.isPublic || isEditor;
 
   return { isAdmin, isEditor, canRead };

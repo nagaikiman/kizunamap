@@ -6,7 +6,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  FileCode2,
   FolderPlus,
   KeyRound,
   RotateCcw,
@@ -214,11 +213,11 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
             <ShieldCheck size={20} className="text-indigo-400" />
             <div>
               <h2 className="text-base font-extrabold">
-                プロジェクト管理・YAML退避/取込・マルチユーザー検証
+                プロジェクト管理・YAML退避/取込
               </h2>
               <p className="text-[11px] text-slate-300">
                 現在の操作アカウント: {actor.email || '未ログイン'} / 管理者権限:{' '}
-                {permissions.isAdmin ? 'あり（オーナー）' : 'なし'}
+                {permissions.isAdmin ? 'あり' : 'なし'}
               </p>
             </div>
           </div>
@@ -231,15 +230,15 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
           </button>
         </div>
 
-        {/* タブバー */}
-        <div className="flex border-b border-slate-200 bg-slate-50 px-4 gap-1 overflow-x-auto">
+        {/* タブバー（縦座標がずれないよう全タブ共通の inline-flex items-center 構造に統一） */}
+        <div className="flex items-center border-b border-slate-200 bg-slate-50 px-4 gap-1 overflow-x-auto">
           <button
             type="button"
             onClick={() => {
               setTab('project');
               setFeedback(null);
             }}
-            className={`px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap ${
+            className={`inline-flex items-center px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap ${
               tab === 'project'
                 ? 'border-indigo-600 text-indigo-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -253,13 +252,13 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
               setTab('members');
               setFeedback(null);
             }}
-            className={`px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap ${
+            className={`inline-flex items-center px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap ${
               tab === 'members'
                 ? 'border-indigo-600 text-indigo-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
-            2. 編集者メンバー管理（ACL）
+            2. 管理者メンバー管理
           </button>
           <button
             type="button"
@@ -267,29 +266,13 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
               setTab('yaml');
               setFeedback(null);
             }}
-            className={`px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap flex items-center gap-1.5 ${
+            className={`inline-flex items-center px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap ${
               tab === 'yaml'
                 ? 'border-indigo-600 text-indigo-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
-            <FileCode2 size={14} />
-            3. YAMLバックアップ退避・取込（管理者専用）
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setTab('testUsers');
-              setFeedback(null);
-            }}
-            className={`px-4 py-3 text-xs font-bold border-b-2 transition whitespace-nowrap flex items-center gap-1.5 ${
-              tab === 'testUsers'
-                ? 'border-indigo-600 text-indigo-700 bg-white'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Users size={14} />
-            4. テスト用複数ユーザー作成・切替
+            3. YAMLバックアップ退避・取込
           </button>
         </div>
 
@@ -356,12 +339,12 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
                         ) : (
                           <>
                             <EyeOff size={15} className="text-amber-600" />
-                            非公開プロジェクト（管理者と許可された編集者のみ閲覧可能）
+                            非公開プロジェクト（管理者のみ閲覧可能）
                           </>
                         )}
                       </div>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        ※公開設定の変更はプロジェクト管理者（オーナー）のみ可能です。
+                        ※公開設定の変更は管理者のみ可能です。
                       </p>
                     </div>
                     <label className="relative inline-flex cursor-pointer items-center">
@@ -518,24 +501,23 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 2: 編集者メンバー管理（ACL） */}
+          {/* TAB 2: 管理者メンバー管理 */}
           {tab === 'members' && (
             <div className="space-y-4">
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 text-xs text-slate-600 space-y-1">
                 <p className="font-bold text-slate-800 flex items-center gap-1.5">
                   <KeyRound size={14} className="text-indigo-600" />
-                  プロジェクト編集権限とグループ内ロールの分離
+                  プロジェクト管理者権限とグループ内ロールの分離
                 </p>
                 <ul className="list-disc list-inside space-y-0.5 text-[11px] text-slate-500">
-                  <li>図の中のグループ役割（「管理者」「責任者」など）を設定しても、このアプリの編集権限は付与されません。</li>
-                  <li>ここで許可された確認済みGoogleメールアドレスのみが編集操作を行えます。</li>
-                  <li>許可リストの一覧取得・変更はオーナー管理者のみ可能であり、一般閲覧者や編集者にはメンバー一覧（メールアドレス）は公開されません。</li>
+                  <li>図の中のグループ役割（「管理者」「責任者」など）を設定しても、このアプリの管理者権限は付与されません。</li>
+                  <li>ここで許可された確認済みGoogleメールアドレスのユーザーが、管理者としてすべての編集・管理操作を行えます。</li>
                 </ul>
               </div>
 
               {!permissions.isAdmin ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-800">
-                  編集者許可リストの一覧閲覧・追加・取り消しはプロジェクト管理者（オーナー）のみ可能です。
+                  管理者リストの一覧閲覧・追加・取り消しは管理者のみ可能です。
                 </div>
               ) : (
                 <>
@@ -543,7 +525,7 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
                     <input
                       type="email"
                       required
-                      placeholder="許可するGoogleアカウントのメールアドレス (例: sato.editor@example.com)"
+                      placeholder="管理者として追加するGoogleメールアドレス"
                       value={editorEmailInput}
                       onChange={(e) => setEditorEmailInput(e.target.value)}
                       className="flex-1 rounded-xl border border-slate-300 px-3.5 py-2 text-xs"
@@ -552,16 +534,16 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
                       type="submit"
                       className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700"
                     >
-                      <UserPlus size={14} /> 編集者として許可
+                      <UserPlus size={14} /> 管理者として追加
                     </button>
                   </form>
 
                   <div className="space-y-2">
                     <h4 className="text-xs font-bold text-slate-700">
-                      登録済み編集者メールアドレス（管理者専用表示）
+                      登録済み管理者メールアドレス
                     </h4>
                     {currentBundle.editorEmails.length === 0 ? (
-                      <p className="text-xs text-slate-400">登録されている編集者はいません。</p>
+                      <p className="text-xs text-slate-400">追加登録されている管理者はいません。</p>
                     ) : (
                       <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
                         {currentBundle.editorEmails.map((rec) => (
@@ -575,11 +557,11 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
                               </span>
                               {rec.active ? (
                                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
-                                  編集許可中
+                                  管理者権限あり
                                 </span>
                               ) : (
                                 <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
-                                  取り消し済み（書き込み拒否）
+                                  取り消し済み
                                 </span>
                               )}
                             </div>

@@ -285,6 +285,10 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     const collapsedSet = new Set(activeDiagram.collapsedGroupIds);
     const focusedGroupId = activeDiagram.filterConfig?.focusedGroupId || null;
     const q = searchQuery.trim().toLowerCase();
+    // 結合点（4辺の青い点）は「つなぐ（関係線作成）」モード時または関係線選択時のみ表示し、「移動 / 所属ドラッグ」時およびPNG出力時は非表示にする
+    const showHandles =
+      !isExportingPng &&
+      (interactionMode === 'connect' || Boolean(selectedEntityKey?.startsWith('rel:')));
 
     const nodes: Node[] = [];
     const edges: Edge[] = [];
@@ -433,6 +437,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             embeddedMembers,
             isCollapsed: collapsedSet.has(lg.id),
             hasChildren,
+            showHandles,
             isDropTarget: dragHoverGroupId === lg.id && !dragIsCopyMode,
             isCopyDropTarget: dragHoverGroupId === lg.id && dragIsCopyMode,
             isHighlighted: selectedEntityKey === key,
@@ -512,6 +517,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             embeddedMembers,
             isCollapsed: false,
             hasChildren: false,
+            showHandles,
             isDropTarget: dragHoverGroupId === sg.id && !dragIsCopyMode,
             isCopyDropTarget: dragHoverGroupId === sg.id && dragIsCopyMode,
             isHighlighted: selectedEntityKey === key,
@@ -589,6 +595,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
               groupName: grp.name,
               rolesHere,
               nodeStyle,
+              showHandles,
               isHighlighted: selectedEntityKey === personEntityKey,
               isDimmed:
                 (!matchesSearch && Boolean(q)) ||
@@ -643,6 +650,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
               groupName: null,
               rolesHere: globalRoles,
               nodeStyle,
+              showHandles,
               isHighlighted: selectedEntityKey === personEntityKey,
               isDimmed:
                 Boolean(selectedEntityKey) && !connectedEntityKeys.has(personEntityKey),
@@ -979,6 +987,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           skills,
           groupMemberships,
           nodeStyle,
+          showHandles,
           isHighlighted: selectedEntityKey === key,
           isDimmed:
             (!matchesSearch && Boolean(q)) ||
@@ -1081,6 +1090,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     connectedEntityKeys,
     permissions.isEditor,
     interactionMode,
+    isExportingPng,
     groupMemberCounts,
     dragHoverGroupId,
     dragIsCopyMode,
@@ -1413,20 +1423,158 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     await updateMultipleNodePositions(activeDiagram.id, nextPositions);
   };
 
-  // PNG書き出し
+  // PNG書き出し（図全体が丁度入るサイズ＋左上にプロジェクト名＋結合点や操作UIを除外）
   const handleExportPng = async () => {
-    if (!canvasWrapperRef.current || !activeDiagram) return;
+    if (!canvasWrapperRef.current || !activeDiagram || !currentBundle) return;
     setIsExportingPng(true);
     try {
-      const dataUrl = await toPng(canvasWrapperRef.current, {
-        backgroundColor: '#f8fafc',
-        pixelRatio: 2,
+      const viewportEl = canvasWrapperRef.current.querySelector(
+        '.react-flow__viewport'
+      ) as HTMLElement | null;
+      if (!viewportEl) return;
+
+      // 全ノードのキャンバス絶対座標と実寸サイズから全体のバウンディングボックスを算出
+      const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      for (const n of nodes) {
+        let absX = n.position.x;
+        let absY = n.position.y;
+        let currParentId = n.parentId;
+        while (currParentId) {
+          const p = nodeMap.get(currParentId);
+          if (!p) break;
+          absX += p.position.x;
+          absY += p.position.y;
+          currParentId = p.parentId;
+        }
+
+        const domNode = canvasWrapperRef.current.querySelector(
+          `.react-flow__node[data-id="${CSS.escape(n.id)}"]`
+        ) as HTMLElement | null;
+
+        const w =
+          domNode?.offsetWidth ||
+          (n.style?.width as number) ||
+          (n.data?.width as number) ||
+          (n.type === 'personNode' ? 340 : 190);
+        const h =
+          domNode?.offsetHeight ||
+          (n.style?.height as number) ||
+          (n.data?.height as number) ||
+          (n.type === 'personNode' ? 140 : 88);
+
+        minX = Math.min(minX, absX);
+        minY = Math.min(minY, absY);
+        maxX = Math.max(maxX, absX + w);
+        maxY = Math.max(maxY, absY + h);
+      }
+
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+        minX = 0;
+        minY = 0;
+        maxX = 960;
+        maxY = 640;
+      }
+
+      const padding = 36;
+      const headerHeight = 48;
+      const contentWidth = Math.max(480, Math.ceil(maxX - minX + padding * 2));
+      const contentHeight = Math.max(320, Math.ceil(maxY - minY + padding * 2));
+      const pixelRatio = 2;
+
+      const viewportDataUrl = await toPng(viewportEl, {
+        backgroundColor: 'transparent',
+        width: contentWidth,
+        height: contentHeight,
+        pixelRatio,
         cacheBust: false,
+        filter: (domNode) => {
+          if (
+            domNode instanceof HTMLElement &&
+            domNode.classList?.contains('react-flow__handle')
+          ) {
+            return false;
+          }
+          return true;
+        },
+        style: {
+          width: `${contentWidth}px`,
+          height: `${contentHeight}px`,
+          transform: `translate(${-minX + padding}px, ${-minY + padding}px) scale(1)`,
+          transformOrigin: '0 0',
+        },
       });
+
+      // オフスクリーンCanvasに背景＋左上のプロジェクト名＋相関図全体を合成
+      const totalWidth = contentWidth;
+      const totalHeight = contentHeight + headerHeight;
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = totalWidth * pixelRatio;
+      outCanvas.height = totalHeight * pixelRatio;
+      const ctx = outCanvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.scale(pixelRatio, pixelRatio);
+
+      // 背景塗りつぶし
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(0, 0, totalWidth, totalHeight);
+
+      // ドットグリッド背景を描画
+      ctx.fillStyle = '#cbd5e1';
+      for (let gx = 16; gx < totalWidth; gx += 20) {
+        for (let gy = 16; gy < totalHeight; gy += 20) {
+          ctx.beginPath();
+          ctx.arc(gx, gy, 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // 左上にプロジェクト名を描画
+      const projectTitle = currentBundle.project.name || 'プロジェクト';
+      ctx.font = '800 18px "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif';
+      const textMetrics = ctx.measureText(projectTitle);
+      const badgePadX = 14;
+      const badgeW = textMetrics.width + badgePadX * 2;
+      const badgeH = 34;
+      const badgeX = 24;
+      const badgeY = 14;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#0f172a';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(projectTitle, badgeX + badgePadX, badgeY + badgeH / 2 + 0.5);
+
+      // 相関図本体を描画
+      await new Promise<void>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, headerHeight, contentWidth, contentHeight);
+          resolve();
+        };
+        img.onerror = (e) => reject(e);
+        img.src = viewportDataUrl;
+      });
+
+      const finalDataUrl = outCanvas.toDataURL('image/png');
       const link = document.createElement('a');
-      const safeName = activeDiagram.name.replace(/[\\/:*?"<>|\s]+/g, '_');
+      const safeName = `${projectTitle}_${activeDiagram.name}`.replace(
+        /[\\/:*?"<>|\s]+/g,
+        '_'
+      );
       link.download = `kizunamap_${safeName}.png`;
-      link.href = dataUrl;
+      link.href = finalDataUrl;
       link.click();
     } catch (err) {
       console.error('PNG書き出しに失敗しました:', err);
@@ -1810,8 +1958,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           </div>
         )}
 
-        {/* 左下ガイドバー（現在の図モードに応じた操作説明） */}
-        <div className="absolute bottom-3 left-3 z-10 flex flex-wrap items-center gap-3 rounded-xl bg-white/95 backdrop-blur-xs px-3.5 py-2 text-[11px] font-semibold text-slate-700 shadow-sm border border-slate-200">
+        {/* 左下ガイドバー（現在の図モードに応じた操作説明・スマホ画面では隠してキャンバスを広く保つ） */}
+        <div className="hidden sm:flex absolute bottom-3 left-3 z-10 flex-wrap items-center gap-3 rounded-xl bg-white/95 backdrop-blur-xs px-3.5 py-2 text-[11px] font-semibold text-slate-700 shadow-sm border border-slate-200">
           {activeDiagram.viewMode === 'mixed' && (
             <>
               <span className="font-extrabold text-indigo-700">【初期画面：所属中心】</span>
@@ -1899,7 +2047,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             position="top-right"
             pannable
             zoomable
-            className="!bg-white/90 !border !border-slate-200 !rounded-xl !shadow-sm"
+            className="hidden sm:block !bg-white/90 !border !border-slate-200 !rounded-xl !shadow-sm"
           />
         </ReactFlow>
       </div>

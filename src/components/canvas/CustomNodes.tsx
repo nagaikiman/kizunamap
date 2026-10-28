@@ -39,35 +39,42 @@ function useFocusAndOpenGesture(
 /**
  * カードの四方（上・右・下・左）すべてから関係線を出したり受けたり・付け替えたりできる共通結点（Handle）
  * ReactFlow の ConnectionMode.Loose と組み合わせることで、4点すべてが始点（source）・終点（target）の両方として機能します。
+ * 「移動 / 所属ドラッグ」モード時およびPNG書き出し時は非表示（透明）にし、「つなぐ」モードまたは関係線選択時のみ表示します。
  */
-const FourSideHandles: React.FC = () => (
-  <>
-    <Handle
-      type="source"
-      position={Position.Top}
-      id="top"
-      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
-    />
-    <Handle
-      type="source"
-      position={Position.Right}
-      id="right"
-      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
-    />
-    <Handle
-      type="source"
-      position={Position.Bottom}
-      id="bottom"
-      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
-    />
-    <Handle
-      type="source"
-      position={Position.Left}
-      id="left"
-      className="!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform"
-    />
-  </>
-);
+const FourSideHandles: React.FC<{ visible?: boolean }> = ({ visible = false }) => {
+  const handleClass = visible
+    ? '!w-3 !h-3 !bg-indigo-600 !border-2 !border-white hover:!scale-125 transition-transform'
+    : '!w-2 !h-2 !opacity-0 !pointer-events-none !border-0';
+
+  return (
+    <>
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="top"
+        className={handleClass}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className={handleClass}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom"
+        className={handleClass}
+      />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left"
+        className={handleClass}
+      />
+    </>
+  );
+};
 
 // ============================================================================
 // 1. 初期画面（所属中心 / mixedモード）専用：
@@ -81,6 +88,7 @@ export interface ScopedPersonNodeData extends Record<string, unknown> {
   groupName: string | null;
   rolesHere: TagItem[]; // ここでのロール（所属先グループでの役割）
   nodeStyle: NodeDisplayStyle;
+  showHandles?: boolean;
   isHighlighted: boolean;
   isDimmed: boolean;
   onFocusPerson: (personId: string) => void;
@@ -89,7 +97,7 @@ export interface ScopedPersonNodeData extends Record<string, unknown> {
 
 export const ScopedPersonFlowNode: React.FC<NodeProps> = ({ data }) => {
   const d = data as unknown as ScopedPersonNodeData;
-  const { person, resolved, rolesHere, nodeStyle, isHighlighted, isDimmed } = d;
+  const { person, resolved, rolesHere, nodeStyle, showHandles, isHighlighted, isDimmed } = d;
 
   const handleClick = useFocusAndOpenGesture(
     () => d.onFocusPerson(person.id),
@@ -107,7 +115,7 @@ export const ScopedPersonFlowNode: React.FC<NodeProps> = ({ data }) => {
         className={`group relative flex flex-col items-center cursor-pointer select-none transition-all ${opacityClass}`}
         data-testid={`person-node-${person.id}`}
       >
-        <FourSideHandles />
+        <FourSideHandles visible={Boolean(showHandles)} />
         <AvatarBadge
           name={resolved.effectiveDisplayName}
           color={person.color}
@@ -155,7 +163,7 @@ export const ScopedPersonFlowNode: React.FC<NodeProps> = ({ data }) => {
       }}
       data-testid={`person-node-${person.id}`}
     >
-      <FourSideHandles />
+      <FourSideHandles visible={Boolean(showHandles)} />
 
       {/* 上段：アイコン＋名前 */}
       <div className="flex items-center gap-2 min-w-0">
@@ -227,6 +235,7 @@ export interface PersonNodeData extends Record<string, unknown> {
     roles: TagItem[];
   }[];
   nodeStyle: NodeDisplayStyle;
+  showHandles?: boolean;
   isHighlighted: boolean;
   isDimmed: boolean;
   onFocusPerson: (personId: string) => void;
@@ -235,7 +244,7 @@ export interface PersonNodeData extends Record<string, unknown> {
 
 export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
   const d = data as unknown as PersonNodeData;
-  const { person, resolved, globalRoles, groupMemberships, nodeStyle, isHighlighted, isDimmed } = d;
+  const { person, resolved, globalRoles, groupMemberships, nodeStyle, showHandles, isHighlighted, isDimmed } = d;
 
   const handleClick = useFocusAndOpenGesture(
     () => d.onFocusPerson(person.id),
@@ -259,7 +268,7 @@ export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
         }}
         data-testid={`person-node-${person.id}`}
       >
-        <FourSideHandles />
+        <FourSideHandles visible={Boolean(showHandles)} />
         <AvatarBadge
           name={resolved.effectiveDisplayName}
           color={person.color}
@@ -308,7 +317,7 @@ export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
       }}
       data-testid={`person-node-${person.id}`}
     >
-      <FourSideHandles />
+      <FourSideHandles visible={Boolean(showHandles)} />
 
       {/* 左側に人物アイコン＆名前、その右脇に所属グループとロールをずらっと並べる横並び構造 */}
       <div className="flex items-stretch rounded-[14px] overflow-hidden">
@@ -430,6 +439,7 @@ export interface GroupContainerNodeData extends Record<string, unknown> {
   }[];
   isCollapsed: boolean;
   hasChildren: boolean;
+  showHandles?: boolean;
   isDropTarget: boolean;
   isCopyDropTarget: boolean;
   isHighlighted: boolean;
@@ -454,6 +464,7 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
     embeddedMembers,
     isCollapsed,
     hasChildren,
+    showHandles,
     isDropTarget,
     isCopyDropTarget,
     isHighlighted,
@@ -509,7 +520,7 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
       } ${dropHighlightClass} ${opacityClass}`}
       data-testid={`group-node-${group.id}`}
     >
-      <FourSideHandles />
+      <FourSideHandles visible={Boolean(showHandles)} />
 
       {/* コンテナ枠の左上ヘッダーバー */}
       <div
