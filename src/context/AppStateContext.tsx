@@ -1468,7 +1468,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       tempIconData?: { dataUrl: string; byteSize: number } | null
     ) => {
       if (!currentBundle) return;
-      const existingInCurrent = currentBundle.people.find((p) => p.id === personInput.id);
+      const existingById = currentBundle.people.find((p) => p.id === personInput.id);
+      const existingSelf =
+        !permissions.isEditor && actor.uid
+          ? currentBundle.people.find((p) => p.linkedUid === actor.uid)
+          : undefined;
+      const existingInCurrent = existingById || existingSelf;
 
       if (existingInCurrent) {
         if (!canEditPersonCard(actor, existingInCurrent, currentBundle)) {
@@ -1493,7 +1498,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
-        const existing = b.people.find((p) => p.id === personInput.id);
+        const existing =
+          b.people.find((p) => p.id === personInput.id) ||
+          (!permissions.isEditor && actor.uid
+            ? b.people.find((p) => p.linkedUid === actor.uid)
+            : undefined);
+        const effectivePersonId = existing ? existing.id : personInput.id;
 
         // 一般人（ログインあり・非編集者）による新規追加時は、自動的に本人UID（actor.uid）と紐づける
         const isSelfRegistration = !existing && !permissions.isEditor && Boolean(actor.uid);
@@ -1510,13 +1520,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // 既に本人アカウント連携済みの場合は、編集者が本人アイコンを上書きすることはできない
         if (!resolvedLinkedUid) {
           if (tempIconData) {
-            nextTempIconId = `icon_person_${personInput.id}`;
+            nextTempIconId = `icon_person_${effectivePersonId}`;
             nextTempIconRev = (nextTempIconRev || 0) + 1;
             nextIcons[nextTempIconId] = {
               id: nextTempIconId,
               projectId: currentProjectId,
               targetKind: 'unlinkedPerson',
-              targetId: personInput.id,
+              targetId: effectivePersonId,
               revision: nextTempIconRev,
               mimeType: 'image/webp',
               width: 128,
@@ -1534,6 +1544,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         const nextPerson: Person = {
           ...personInput,
+          id: effectivePersonId,
           projectId: currentProjectId,
           linkedUid: resolvedLinkedUid,
           activeInvitationId: existing ? existing.activeInvitationId : null,
@@ -1547,25 +1558,60 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           : [...b.people, nextPerson];
 
         // 一般ログインユーザーが自分の人物カードを新規作成した際、本人プロフィールが未作成なら初期プロフィールを用意
-        // また既にアカウント連携済みの人物カードの名前を変更した場合、本人プロフィールとテストユーザーの表示名も同期する
+        // また本人が仮アイコン欄から画像を設定した場合も本人プロフィール画像（profileIcons）に保存する
         const nextProfiles = { ...prev.userProfiles };
+        const nextProfileIcons = { ...prev.profileIcons };
+        const isOwnLinkedCard = Boolean(actor.uid && resolvedLinkedUid === actor.uid);
+
         if (isSelfRegistration && actor.uid && !nextProfiles[actor.uid]) {
+          const nextRev = isOwnLinkedCard && tempIconData ? 1 : 0;
           nextProfiles[actor.uid] = {
             ownerUid: actor.uid,
             displayName: personInput.displayName,
             bio: '',
             links: [],
             isPublic: true,
-            iconRevision: 0,
+            iconRevision: nextRev,
             avatarPreset: personInput.avatarPreset || 'user',
             updatedAt: now,
           };
+          if (isOwnLinkedCard && tempIconData) {
+            nextProfileIcons[actor.uid] = {
+              ownerUid: actor.uid,
+              isPublic: true,
+              revision: nextRev,
+              mimeType: 'image/webp',
+              width: 128,
+              height: 128,
+              byteSize: tempIconData.byteSize,
+              dataUrl: tempIconData.dataUrl,
+              updatedAt: now,
+            };
+          }
         } else if (resolvedLinkedUid && nextProfiles[resolvedLinkedUid]) {
+          const prevProf = nextProfiles[resolvedLinkedUid];
+          const nextRev =
+            isOwnLinkedCard && tempIconData ? (prevProf.iconRevision || 0) + 1 : prevProf.iconRevision;
           nextProfiles[resolvedLinkedUid] = {
-            ...nextProfiles[resolvedLinkedUid],
+            ...prevProf,
             displayName: personInput.displayName,
+            iconRevision: nextRev,
+            avatarPreset: personInput.avatarPreset || prevProf.avatarPreset,
             updatedAt: now,
           };
+          if (isOwnLinkedCard && tempIconData && actor.uid) {
+            nextProfileIcons[actor.uid] = {
+              ownerUid: actor.uid,
+              isPublic: prevProf.isPublic,
+              revision: nextRev,
+              mimeType: 'image/webp',
+              width: 128,
+              height: 128,
+              byteSize: tempIconData.byteSize,
+              dataUrl: tempIconData.dataUrl,
+              updatedAt: now,
+            };
+          }
         }
 
         const nextTestUsers = resolvedLinkedUid
@@ -1585,6 +1631,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return {
           ...prev,
           userProfiles: nextProfiles,
+          profileIcons: nextProfileIcons,
           testUsers: nextTestUsers,
           projects: {
             ...prev.projects,
@@ -1654,18 +1701,25 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const upsertMembership = useCallback(
     async (membershipInput: Omit<Membership, 'projectId' | 'updatedAt'>) => {
       if (!currentBundle) return;
-      const targetPerson = currentBundle.people.find((p) => p.id === membershipInput.personId);
-      if (!targetPerson || !canEditPersonCard(actor, targetPerson, currentBundle)) {
-        throw new Error('PERMISSION_DENIED: 所属・役割を編集する権限がありません。');
-      }
       const now = new Date().toISOString();
       await commitStoreUpdate((prev) => {
         const b = prev.projects[currentProjectId];
         if (!b) return prev;
 
-        const personExists = b.people.some((p) => p.id === membershipInput.personId);
+        // 新規カード作成直後でも最新 state (b.people) から対象人物を解決する
+        const targetPerson =
+          b.people.find((p) => p.id === membershipInput.personId) ||
+          (!permissions.isEditor && actor.uid
+            ? b.people.find((p) => p.linkedUid === actor.uid)
+            : undefined);
+
+        if (!targetPerson || !canEditPersonCard(actor, targetPerson, b)) {
+          throw new Error('PERMISSION_DENIED: 所属・役割を編集する権限がありません。');
+        }
+
+        const effectivePersonId = targetPerson.id;
         const groupExists = b.groups.some((g) => g.id === membershipInput.groupId);
-        if (!personExists || !groupExists) {
+        if (!groupExists) {
           throw new Error('VALIDATION_ERROR: 同一プロジェクト内の有効な人物とグループを指定してください。');
         }
 
@@ -1673,12 +1727,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const existing = b.memberships.find(
           (m) =>
             m.id === membershipInput.id ||
-            (m.personId === membershipInput.personId && m.groupId === membershipInput.groupId)
+            (m.personId === effectivePersonId && m.groupId === membershipInput.groupId)
         );
 
         const nextMem: Membership = {
           ...membershipInput,
           id: existing ? existing.id : membershipInput.id,
+          personId: effectivePersonId,
           projectId: currentProjectId,
           updatedAt: now,
         };
@@ -1699,7 +1754,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       });
     },
-    [actor, commitStoreUpdate, currentBundle, currentProjectId]
+    [actor, commitStoreUpdate, currentBundle, currentProjectId, permissions.isEditor]
   );
 
   const deleteMembership = useCallback(

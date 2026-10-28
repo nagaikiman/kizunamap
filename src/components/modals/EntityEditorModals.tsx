@@ -67,9 +67,14 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
 
   const existing = personId
     ? currentBundle?.people.find((p) => p.id === personId) || null
+    : !permissions.isEditor && actor.uid
+    ? currentBundle?.people.find((p) => p.linkedUid === actor.uid) || null
     : null;
 
   const isSelfRegistration = !existing && !permissions.isEditor && Boolean(actor.uid);
+  const isEditingOwnCard = Boolean(
+    actor.uid && (isSelfRegistration || existing?.linkedUid === actor.uid)
+  );
   const defaultSelfName =
     isSelfRegistration && actor.uid ? userProfiles[actor.uid]?.displayName || '' : '';
 
@@ -127,8 +132,8 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
         tempIconData
       );
 
-      // 新規作成時にグループ所属も選択されていたら同時に保存
-      if (!existing && selectedGroupId) {
+      // グループ所属も選択されていたら同時に保存（新規・編集共通）
+      if (selectedGroupId) {
         await upsertMembership({
           id: generateUnfathomableId('mem'),
           personId: targetId,
@@ -260,11 +265,15 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
                 />
                 <div className="space-y-1 text-xs">
                   <span className="font-bold text-slate-700 block">
-                    {existing?.linkedUid ? '本人アカウント連携済み' : '未連携人物の仮アイコン'}
+                    {isEditingOwnCard
+                      ? 'あなたのアイコン画像'
+                      : existing?.linkedUid
+                      ? '本人アカウント連携済み'
+                      : '未連携人物の仮アイコン'}
                   </span>
-                  {existing?.linkedUid ? (
+                  {existing?.linkedUid && !isEditingOwnCard ? (
                     <span className="text-[11px] text-amber-700 block">
-                      ※本人連携済のため、編集者は本人アイコンを変更できません。
+                      ※本人連携済のため、他人のアイコンは変更できません。
                     </span>
                   ) : (
                     <button
@@ -272,7 +281,7 @@ export const PersonEditorModal: React.FC<PersonEditorModalProps> = ({ personId, 
                       onClick={() => setShowIconCropper(true)}
                       className="inline-flex items-center gap-1 rounded-lg bg-white border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                     >
-                      <ImagePlus size={13} /> 仮画像を設定
+                      <ImagePlus size={13} /> {isEditingOwnCard ? 'アイコン画像を設定' : '仮画像を設定'}
                     </button>
                   )}
                 </div>
