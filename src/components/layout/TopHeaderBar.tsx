@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
+import { signInWithGooglePopup, signOutFirebase } from '../../services/firebaseClient';
 import { canCreateSelfPerson } from '../../utils/securityGuards';
 
 interface TopHeaderBarProps {
@@ -38,6 +39,8 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
     selectProject,
     currentBundle,
     actor,
+    currentUserLabel,
+    isFirebaseConfigured,
     testUsers,
     activeTestUserUid,
     switchTestUser,
@@ -179,21 +182,23 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
             </button>
           )}
 
-          {/* 通信失敗シミュレーション切替（テスト要件「通信失敗時の未保存表示」検証用） */}
-          <button
-            type="button"
-            onClick={() => setSimulateNetworkFailure(!simulateNetworkFailure)}
-            className={`hidden xl:inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
-              simulateNetworkFailure
-                ? 'border-rose-400 bg-rose-600 text-white'
-                : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-            }`}
-            title="通信失敗・無料枠到達時の未保存表示を検証するためのトグル"
-            data-testid="toggle-network-failure-btn"
-          >
-            <WifiOff size={12} />
-            {simulateNetworkFailure ? '通信障害テスト中(ON)' : '通信障害テスト'}
-          </button>
+          {/* 通信失敗シミュレーション切替（管理者のみ表示） */}
+          {permissions.isAdmin && (
+            <button
+              type="button"
+              onClick={() => setSimulateNetworkFailure(!simulateNetworkFailure)}
+              className={`hidden xl:inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
+                simulateNetworkFailure
+                  ? 'border-rose-400 bg-rose-600 text-white'
+                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+              title="通信失敗・無料枠到達時の未保存表示を検証するためのトグル"
+              data-testid="toggle-network-failure-btn"
+            >
+              <WifiOff size={12} />
+              {simulateNetworkFailure ? '通信障害テスト中(ON)' : '通信障害テスト'}
+            </button>
+          )}
 
           {/* 自分の本人プロフィール直通ボタン（自分にひも付いた人物がある場合） */}
           {myLinkedPerson ? (
@@ -234,39 +239,87 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
             </button>
           )}
 
-          {/* マルチユーザー検証用：アカウント切り替えセレクタ（メールアドレスは管理者のみ表示） */}
-          <div className="flex items-center gap-1.5 rounded-xl bg-slate-900 text-white px-2.5 py-1 shadow-xs">
-            <Users size={13} className="text-indigo-400 shrink-0" />
-            <select
-              value={activeTestUserUid ?? '__anonymous__'}
-              onChange={(e) => {
-                const val = e.target.value;
-                switchTestUser(val === '__anonymous__' ? null : val);
-              }}
-              className="bg-slate-900 text-white text-xs font-bold focus:outline-none max-w-[230px] truncate cursor-pointer"
-              title="テスト用操作ユーザーを切り替え"
-              data-testid="test-user-switcher"
-            >
-              <option value="__anonymous__">👤 一般人（ログイン無し・閲覧のみ）</option>
-              {testUsers.map((u) => (
-                <option key={u.uid} value={u.uid}>
-                  🔑 {u.displayName}
-                  {permissions.isAdmin ? ` (${u.email})` : ''}
-                </option>
-              ))}
-            </select>
-            {permissions.isAdmin && (
-              <button
-                type="button"
-                onClick={() => onOpenAdminSettings('testUsers')}
-                className="rounded bg-indigo-600 hover:bg-indigo-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white shrink-0"
-                title="テスト用ユーザーを新規作成・管理（管理者のみ）"
-                data-testid="open-test-users-modal-btn"
+          {/* 本番Firebase接続時：Googleログイン / ログアウトボタン（URLを開いた人は未ログイン＝閲覧のみで開始） */}
+          {isFirebaseConfigured && !activeTestUserUid ? (
+            <div className="flex items-center gap-2 rounded-xl bg-slate-900 text-white px-3 py-1.5 shadow-xs">
+              {actor.uid ? (
+                <>
+                  <span className="text-xs font-bold truncate max-w-[180px]" title={actor.email || ''}>
+                    🔑 {myLinkedPerson?.displayName || currentUserLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await signOutFirebase();
+                      switchTestUser(null);
+                    }}
+                    className="rounded-lg bg-slate-700 hover:bg-slate-600 px-2.5 py-0.5 text-[11px] font-bold text-white shrink-0"
+                  >
+                    ログアウト
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-slate-300">
+                    👤 一般人（ログイン無し・閲覧のみ）
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await signInWithGooglePopup();
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : String(err));
+                      }
+                    }}
+                    className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1 text-xs font-extrabold text-white shrink-0"
+                  >
+                    Googleでログイン
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            /* ローカルデモ・または管理者のマルチユーザー検証モード時 */
+            <div className="flex items-center gap-1.5 rounded-xl bg-slate-900 text-white px-2.5 py-1 shadow-xs">
+              <Users size={13} className="text-indigo-400 shrink-0" />
+              <select
+                value={activeTestUserUid ?? '__anonymous__'}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  switchTestUser(val === '__anonymous__' ? null : val);
+                }}
+                className="bg-slate-900 text-white text-xs font-bold focus:outline-none max-w-[230px] truncate cursor-pointer"
+                title="テスト用操作ユーザーを切り替え"
+                data-testid="test-user-switcher"
               >
-                ＋作成
-              </button>
-            )}
-          </div>
+                <option value="__anonymous__">👤 一般人（ログイン無し・閲覧のみ）</option>
+                {testUsers.map((u) => {
+                  const linkedPerson = currentBundle?.people.find((p) => p.linkedUid === u.uid);
+                  const resolvedLabel = linkedPerson
+                    ? `${linkedPerson.displayName}${u.roleHint === 'admin' ? '（管理者・オーナー）' : ''}`
+                    : u.displayName;
+                  return (
+                    <option key={u.uid} value={u.uid}>
+                      🔑 {resolvedLabel}
+                      {permissions.isAdmin ? ` (${u.email})` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+              {permissions.isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminSettings('testUsers')}
+                  className="rounded bg-indigo-600 hover:bg-indigo-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white shrink-0"
+                  title="テスト用ユーザーを新規作成・管理（管理者のみ）"
+                  data-testid="open-test-users-modal-btn"
+                >
+                  ＋作成
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </header>
 

@@ -22,12 +22,17 @@ export interface FirebaseEnvConfig {
 }
 
 export function getFirebaseEnvConfig(): FirebaseEnvConfig | null {
-  const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-  const authDomain = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN;
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  const messagingSenderId = import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID;
-  const appId = import.meta.env.VITE_FIREBASE_APP_ID;
-  const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
+  const env = import.meta.env as Record<string, string | undefined>;
+  const apiKey = (
+    env.VITE_FIREBASE_API_KEY ||
+    env['\uFEFFVITE_FIREBASE_API_KEY'] ||
+    ''
+  ).trim();
+  const authDomain = (env.VITE_FIREBASE_AUTH_DOMAIN || '').trim();
+  const projectId = (env.VITE_FIREBASE_PROJECT_ID || '').trim();
+  const messagingSenderId = (env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim();
+  const appId = (env.VITE_FIREBASE_APP_ID || '').trim();
+  const useEmulator = env.VITE_USE_FIREBASE_EMULATOR === 'true';
 
   if (
     !apiKey ||

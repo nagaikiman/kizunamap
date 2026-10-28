@@ -226,13 +226,17 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const isFirebaseConfigured = Boolean(firebaseClients);
 
   const [store, setStore] = useState<PersistedLocalStore>(() => loadInitialLocalStore());
-  const [activeTestUserUid, setActiveTestUserUid] = useState<string | null>(DEMO_ADMIN_UID);
+  // Firebase本番接続時は初期状態を必ず「未ログイン（ゲスト閲覧者 = null）」にする（URLを開いた人が勝手に管理者にならないようにする）
+  const [activeTestUserUid, setActiveTestUserUid] = useState<string | null>(() =>
+    isFirebaseConfigured ? null : DEMO_ADMIN_UID
+  );
   const [firebaseAuthUser, setFirebaseAuthUser] = useState<{
     uid: string;
     email: string | null;
     emailVerified: boolean;
     displayName: string | null;
   } | null>(null);
+  const [isFirebaseOperator, setIsFirebaseOperator] = useState<boolean>(false);
 
   // URLクエリ ?project=xxx があれば初期プロジェクトにする
   const [currentProjectId, setCurrentProjectId] = useState<string>(() => {
@@ -270,7 +274,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         uid: firebaseAuthUser.uid,
         email: firebaseAuthUser.email,
         emailVerified: firebaseAuthUser.emailVerified,
-        isOperator: true,
+        isOperator: isFirebaseOperator,
       };
     }
     if (!activeTestUser) {
@@ -287,33 +291,147 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       emailVerified: activeTestUser.emailVerified,
       isOperator: activeTestUser.roleHint === 'admin',
     };
-  }, [firebaseAuthUser, activeTestUser, activeTestUserUid]);
+  }, [firebaseAuthUser, activeTestUser, activeTestUserUid, isFirebaseOperator]);
 
   const currentUserLabel = useMemo(() => {
     if (firebaseAuthUser && !activeTestUserUid) {
-      return firebaseAuthUser.displayName || 'Googleユーザー';
+      const b = store.projects[currentProjectId];
+      const linkedPerson = b?.people.find((p) => p.linkedUid === firebaseAuthUser.uid);
+      return (
+        linkedPerson?.displayName ||
+        store.userProfiles[firebaseAuthUser.uid]?.displayName ||
+        firebaseAuthUser.displayName ||
+        firebaseAuthUser.email ||
+        'Googleログインユーザー'
+      );
     }
     if (!activeTestUser) {
-      return '未ログイン（ゲスト閲覧者）';
+      return '一般人（ログイン無し・閲覧のみ）';
+    }
+    const b = store.projects[currentProjectId];
+    const linkedPerson = b?.people.find((p) => p.linkedUid === activeTestUser.uid);
+    if (linkedPerson) {
+      return `${linkedPerson.displayName}${activeTestUser.roleHint === 'admin' ? '（管理者・オーナー）' : ''}`;
     }
     return activeTestUser.displayName;
-  }, [firebaseAuthUser, activeTestUser, activeTestUserUid]);
+  }, [firebaseAuthUser, activeTestUser, activeTestUserUid, store.projects, store.userProfiles, currentProjectId]);
 
-  // Firebase Auth 監視
+  // Firebase Auth 監視 ＆ systemConfig/operators による管理者（オーナー）判定
   useEffect(() => {
     if (!firebaseClients) return;
-    const unsub = onAuthStateChanged(firebaseClients.auth, (user) => {
+    const unsub = onAuthStateChanged(firebaseClients.auth, async (user) => {
       if (user) {
+        // 本番Googleログイン時はテストユーザー選択を解除して実アカウントで動作させる
+        setActiveTestUserUid(null);
         setFirebaseAuthUser({
           uid: user.uid,
           email: user.email,
           emailVerified: user.emailVerified,
           displayName: user.displayName,
         });
+
+        let isOp = false;
+        try {
+          const opSnap = await getDoc(doc(firebaseClients.db, 'systemConfig', 'operators'));
+          if (opSnap.exists()) {
+            const data = opSnap.data() as { allowedEmails?: string[]; allowedUids?: string[] };
+            const emailLower = (user.email || '').trim().toLowerCase();
+            const allowedEmails = (data.allowedEmails || []).map((e) => String(e).trim().toLowerCase());
+            const allowedUids = (data.allowedUids || []).map((u) => String(u).trim());
+            if ((emailLower && allowedEmails.includes(emailLower)) || allowedUids.includes(user.uid)) {
+              isOp = true;
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to check systemConfig/operators:', err);
+        }
+        setIsFirebaseOperator(isOp);
+
+        // 管理者（operators登録メール本人）がログインした場合、初期プロジェクトの ownerUid と管理者カードを本人の実Google UIDに引き継ぐ
+        if (isOp) {
+          setStore((prev) => {
+            let changed = false;
+            const nextProjects = { ...prev.projects };
+            for (const pid of Object.keys(nextProjects)) {
+              const bundle = nextProjects[pid];
+              if (bundle.project.ownerUid === DEMO_ADMIN_UID) {
+                changed = true;
+                nextProjects[pid] = {
+                  ...bundle,
+                  project: {
+                    ...bundle.project,
+                    ownerUid: user.uid,
+                  },
+                  people: bundle.people.map((p) =>
+                    p.linkedUid === DEMO_ADMIN_UID ? { ...p, linkedUid: user.uid } : p
+                  ),
+                };
+              }
+            }
+            const nextProfiles = { ...prev.userProfiles };
+            if (nextProfiles[DEMO_ADMIN_UID] && !nextProfiles[user.uid]) {
+              changed = true;
+              const adminCard = nextProjects[currentProjectId]?.people.find(
+                (p) => p.linkedUid === user.uid
+              );
+              nextProfiles[user.uid] = {
+                ...nextProfiles[DEMO_ADMIN_UID],
+                ownerUid: user.uid,
+                displayName: adminCard?.displayName || user.displayName || nextProfiles[DEMO_ADMIN_UID].displayName,
+              };
+            }
+            if (!changed) return prev;
+            const nextState: PersistedLocalStore = {
+              ...prev,
+              projects: nextProjects,
+              userProfiles: nextProfiles,
+            };
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+              setDoc(doc(firebaseClients.db, 'appWorkspace', 'main_v2'), {
+                payloadJson: JSON.stringify(nextState),
+                updatedAt: new Date().toISOString(),
+              }).catch(() => {});
+            } catch {
+              // ignore
+            }
+            return nextState;
+          });
+        }
       } else {
         setFirebaseAuthUser(null);
+        setIsFirebaseOperator(false);
       }
     });
+    return () => unsub();
+  }, [firebaseClients, currentProjectId]);
+
+  // Cloud Firestore からのリアルタイム同期（本番環境で全ユーザーが同じ最新データを共有できるようにする）
+  useEffect(() => {
+    if (!firebaseClients) return;
+    const wsRef = doc(firebaseClients.db, 'appWorkspace', 'main_v2');
+    const unsub = onSnapshot(
+      wsRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as { payloadJson?: string };
+          if (data?.payloadJson) {
+            try {
+              const parsed = JSON.parse(data.payloadJson) as PersistedLocalStore;
+              if (parsed && parsed.projects && parsed.userProfiles) {
+                setStore(parsed);
+                localStorage.setItem(STORAGE_KEY, data.payloadJson);
+              }
+            } catch {
+              // ignore parse error
+            }
+          }
+        }
+      },
+      (err) => {
+        console.warn('Firestore workspace listener warning:', err);
+      }
+    );
     return () => unsub();
   }, [firebaseClients]);
 
@@ -404,6 +522,14 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             const bc = new BroadcastChannel(SYNC_CHANNEL_NAME);
             bc.postMessage({ type: 'SYNC_STORE', payload: next });
             bc.close();
+          }
+          if (firebaseClients) {
+            setDoc(doc(firebaseClients.db, 'appWorkspace', 'main_v2'), {
+              payloadJson: serialized,
+              updatedAt: new Date().toISOString(),
+            }).catch((err) => {
+              console.warn('Firestore save warning:', err);
+            });
           }
         } catch (e) {
           console.error('Failed to persist store', e);
@@ -1403,6 +1529,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           : [...b.people, nextPerson];
 
         // 一般ログインユーザーが自分の人物カードを新規作成した際、本人プロフィールが未作成なら初期プロフィールを用意
+        // また既にアカウント連携済みの人物カードの名前を変更した場合、本人プロフィールとテストユーザーの表示名も同期する
         const nextProfiles = { ...prev.userProfiles };
         if (isSelfRegistration && actor.uid && !nextProfiles[actor.uid]) {
           nextProfiles[actor.uid] = {
@@ -1415,11 +1542,32 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             avatarPreset: personInput.avatarPreset || 'user',
             updatedAt: now,
           };
+        } else if (resolvedLinkedUid && nextProfiles[resolvedLinkedUid]) {
+          nextProfiles[resolvedLinkedUid] = {
+            ...nextProfiles[resolvedLinkedUid],
+            displayName: personInput.displayName,
+            updatedAt: now,
+          };
         }
+
+        const nextTestUsers = resolvedLinkedUid
+          ? prev.testUsers.map((u) =>
+              u.uid === resolvedLinkedUid
+                ? {
+                    ...u,
+                    displayName:
+                      u.roleHint === 'admin'
+                        ? `${personInput.displayName}（管理者・オーナー）`
+                        : personInput.displayName,
+                  }
+                : u
+            )
+          : prev.testUsers;
 
         return {
           ...prev,
           userProfiles: nextProfiles,
+          testUsers: nextTestUsers,
           projects: {
             ...prev.projects,
             [currentProjectId]: {

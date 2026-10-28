@@ -235,7 +235,7 @@ export interface PersonNodeData extends Record<string, unknown> {
 
 export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
   const d = data as unknown as PersonNodeData;
-  const { person, resolved, globalRoles, groupMemberships, isHighlighted, isDimmed } = d;
+  const { person, resolved, globalRoles, groupMemberships, nodeStyle, isHighlighted, isDimmed } = d;
 
   const handleClick = useFocusAndOpenGesture(
     () => d.onFocusPerson(person.id),
@@ -243,6 +243,56 @@ export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
   );
 
   const opacityClass = isDimmed ? 'opacity-30' : 'opacity-100';
+
+  if (nodeStyle === 'compact') {
+    return (
+      <div
+        onClick={handleClick}
+        title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
+        className={`relative rounded-xl bg-white border-2 px-3 py-2 shadow-xs transition-all cursor-pointer select-none flex items-center gap-2.5 ${
+          isHighlighted ? 'ring-3 ring-indigo-500 shadow-lg' : 'hover:shadow-md'
+        } ${opacityClass}`}
+        style={{
+          borderColor: isHighlighted ? '#4f46e5' : person.color,
+          minWidth: 180,
+          maxWidth: 280,
+        }}
+        data-testid={`person-node-${person.id}`}
+      >
+        <FourSideHandles />
+        <AvatarBadge
+          name={resolved.effectiveDisplayName}
+          color={person.color}
+          iconDataUrl={resolved.iconDataUrl}
+          preset={resolved.avatarPreset}
+          size="sm"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-extrabold text-slate-900 truncate">
+            {resolved.effectiveDisplayName}
+          </div>
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            {groupMemberships.length > 0 ? (
+              groupMemberships.map((gm) => (
+                <span
+                  key={gm.groupId}
+                  className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-700"
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ backgroundColor: gm.groupColor }}
+                  />
+                  {gm.groupName}
+                </span>
+              ))
+            ) : (
+              <span className="text-[10px] text-slate-400">未所属</span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

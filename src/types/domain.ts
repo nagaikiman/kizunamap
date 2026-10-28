@@ -205,6 +205,7 @@ export interface DiagramFilterConfig {
   showMemberships: boolean;
   showRelationships: boolean;
   showGroupHierarchy: boolean;
+  showMixedArrows?: boolean; // 初期画面（所属中心）での矢印表示ON/OFF（デフォルトOFF=false）
 }
 
 export interface Diagram {

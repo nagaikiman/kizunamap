@@ -38,7 +38,6 @@ import type {
   EntityKind,
   HandleSide,
   NodeDisplayStyle,
-  Person,
 } from '../../types/domain';
 import { calculateGroupMemberCounts } from '../../utils/groupRules';
 import {
@@ -46,7 +45,6 @@ import {
   computeNestedGroupLayout,
 } from '../../utils/layoutEngine';
 import {
-  canEditPersonCard,
   canManageRelationship,
   resolvePersonView,
 } from '../../utils/securityGuards';
@@ -182,6 +180,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
   const lastEdgeTapRef = useRef<{ edgeId: string; time: number }>({ edgeId: '', time: 0 });
   const [interactionMode, setInteractionMode] = useState<'move' | 'connect'>('move');
   const [confirmDeleteDiagId, setConfirmDeleteDiagId] = useState<string | null>(null);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [isExportingPng, setIsExportingPng] = useState(false);
 
   // ドラッグ中のグループ枠ハイライト状態（移動 or Ctrl/右ドラッグによるコピー追加）
@@ -189,39 +188,13 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
   const [dragIsCopyMode, setDragIsCopyMode] = useState<boolean>(false);
   const [dragFeedbackToast, setDragFeedbackToast] = useState<string | null>(null);
 
-  // 図タイトル・説明のデバウンス自動保存ステート
+  // 図タイトル編集ステート（タブダブルクリック時用）
   const [diagramTitleDraft, setDiagramTitleDraft] = useState(activeDiagram?.name || '');
-  const [diagramDescDraft, setDiagramDescDraft] = useState(activeDiagram?.description || '');
 
   useEffect(() => {
     setDiagramTitleDraft(activeDiagram?.name || '');
-    setDiagramDescDraft(activeDiagram?.description || '');
-  }, [activeDiagram?.id, activeDiagram?.name, activeDiagram?.description]);
-
-  useEffect(() => {
-    if (!activeDiagram || !permissions.isEditor) return;
-    if (
-      diagramTitleDraft === activeDiagram.name &&
-      diagramDescDraft === activeDiagram.description
-    ) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      if (diagramTitleDraft.trim()) {
-        updateDiagram(activeDiagram.id, {
-          name: diagramTitleDraft.trim(),
-          description: diagramDescDraft,
-        });
-      }
-    }, 650);
-    return () => clearTimeout(timer);
-  }, [
-    diagramTitleDraft,
-    diagramDescDraft,
-    activeDiagram,
-    permissions.isEditor,
-    updateDiagram,
-  ]);
+    setEditingTabId(null);
+  }, [activeDiagram?.id, activeDiagram?.name]);
 
   const groupMemberCounts = useMemo(() => {
     if (!currentBundle) return {};
@@ -446,7 +419,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           type: 'groupNode',
           position: pos,
           style: { width: lgWidth, height: lgHeight },
-          zIndex: selectedEntityKey === key ? 12 : 10,
+          // レイヤー3: 大グループカード（zIndex: 10、選択時11 — 小グループ矢印12より常に背面）
+          zIndex: selectedEntityKey === key ? 11 : 10,
           draggable: permissions.isEditor && interactionMode === 'move',
           data: {
             group: lg,
@@ -524,7 +498,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           extent: 'parent',
           position: { x: sp.x, y: sp.y },
           style: { width: sp.width, height: sp.height },
-          zIndex: selectedEntityKey === key ? 18 : 15,
+          // レイヤー6: 小グループカード（zIndex: 20、選択時21 — 小グループ矢印12/14より前面、ユーザ矢印22より背面）
+          zIndex: selectedEntityKey === key ? 21 : 20,
           draggable: permissions.isEditor && interactionMode === 'move',
           data: {
             group: sg,
@@ -595,15 +570,16 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             rolesHere.some((r) => r.name.toLowerCase().includes(q));
 
           const personEntityKey = `person:${person.id}`;
-          const canMoveThisPerson =
-            canEditPersonCard(actor, person, currentBundle) && interactionMode === 'move';
+          // キャンバス上のドラッグ移動は管理者・編集者のみ可能
+          const canMoveThisPerson = permissions.isEditor && interactionMode === 'move';
 
           nodes.push({
             id: nodeId,
             type: 'scopedPersonNode',
             parentId: parentGroupNodeId,
             position: mp,
-            zIndex: selectedEntityKey === personEntityKey ? 25 : 20,
+            // レイヤー9: ユーザカード（zIndex: 30、選択時35 — ユーザ矢印22/24より前面、フォーカス矢印40より背面）
+            zIndex: selectedEntityKey === personEntityKey ? 35 : 30,
             draggable: canMoveThisPerson,
             data: {
               person,
@@ -651,14 +627,13 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
 
           personToRenderedNodeIds.set(person.id, [unKey]);
           const personEntityKey = `person:${person.id}`;
-          const canMoveThisPerson =
-            canEditPersonCard(actor, person, currentBundle) && interactionMode === 'move';
+          const canMoveThisPerson = permissions.isEditor && interactionMode === 'move';
 
           nodes.push({
             id: unKey,
             type: 'scopedPersonNode',
             position: pos,
-            zIndex: selectedEntityKey === personEntityKey ? 25 : 20,
+            zIndex: selectedEntityKey === personEntityKey ? 35 : 30,
             draggable: canMoveThisPerson,
             data: {
               person,
@@ -682,11 +657,149 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
       }
 
       // D. 関係線の描画
-      // - 初期画面（所属中心 / mixed）：関係性表示は無し（純粋に所属・ロールの入れ子構造に集中）
-      // - グループ図（グループ中心 / groups）：グループ間の関係線を SmartRelationshipEdge（片方向は根本寄り・双方向は真ん中）で表示
+      // レイヤー順（背面から）：
+      // 1. 大グループ矢印(2) → 2. 大グループ矢印内容(4) → 3. 大グループカード(10)
+      // → 4. 小グループ矢印(12) → 5. 小グループ矢印内容(14) → 6. 小グループカード(20)
+      // → 7. ユーザ矢印(22) → 8. ユーザ矢印内容(24) → 9. ユーザカード(30)
+      // （フォーカス時は矢印 40 → 矢印内容 50）
       const renderedNodeIdSet = new Set(nodes.map((n) => n.id));
+      const showArrowsInMixed = Boolean(activeDiagram.filterConfig?.showMixedArrows);
+      const showArrowsInGroups = activeDiagram.filterConfig?.showRelationships !== false;
 
-      if (viewMode === 'groups') {
+      if (viewMode === 'mixed' && showArrowsInMixed) {
+        // 初期画面（所属中心）で「矢印表示」ONのとき：グループ間・人物間・グループと人物間の全関係線を1対Nも含めて描画
+        const rawPairs: {
+          rel: (typeof currentBundle.relationships)[number];
+          sNodeId: string;
+          tNodeId: string;
+          edgeTier: 'largeGroup' | 'smallGroup' | 'person';
+          baseEdgeZ: number;
+          isEdgeHighlighted: boolean;
+          isEdgeSelected: boolean;
+        }[] = [];
+
+        for (const rel of currentBundle.relationships) {
+          const srcNodeIds =
+            rel.sourceKind === 'group'
+              ? renderedNodeIdSet.has(`group:${rel.sourceId}`)
+                ? [`group:${rel.sourceId}`]
+                : []
+              : personToRenderedNodeIds.get(rel.sourceId) || [];
+          const tgtNodeIds =
+            rel.targetKind === 'group'
+              ? renderedNodeIdSet.has(`group:${rel.targetId}`)
+                ? [`group:${rel.targetId}`]
+                : []
+              : personToRenderedNodeIds.get(rel.targetId) || [];
+
+          if (srcNodeIds.length === 0 || tgtNodeIds.length === 0) continue;
+
+          let edgeTier: 'largeGroup' | 'smallGroup' | 'person' = 'person';
+          let baseEdgeZ = 22;
+          if (rel.sourceKind === 'group' && rel.targetKind === 'group') {
+            const srcGrp = currentBundle.groups.find((g) => g.id === rel.sourceId);
+            const tgtGrp = currentBundle.groups.find((g) => g.id === rel.targetId);
+            if (srcGrp?.kind === 'small' || tgtGrp?.kind === 'small') {
+              edgeTier = 'smallGroup';
+              baseEdgeZ = 12;
+            } else {
+              edgeTier = 'largeGroup';
+              baseEdgeZ = 2;
+            }
+          }
+
+          const sEntityKey = `${rel.sourceKind}:${rel.sourceId}`;
+          const tEntityKey = `${rel.targetKind}:${rel.targetId}`;
+          const isEdgeSelected = selectedEntityKey === `rel:${rel.id}`;
+          const isEdgeHighlighted =
+            isEdgeSelected ||
+            selectedEntityKey === sEntityKey ||
+            selectedEntityKey === tEntityKey;
+
+          for (const sNodeId of srcNodeIds) {
+            for (const tNodeId of tgtNodeIds) {
+              if (sNodeId === tNodeId) continue;
+              rawPairs.push({
+                rel,
+                sNodeId,
+                tNodeId,
+                edgeTier,
+                baseEdgeZ,
+                isEdgeHighlighted,
+                isEdgeSelected,
+              });
+            }
+          }
+        }
+
+        const pairCounts = new Map<string, number>();
+        for (const item of rawPairs) {
+          const pk = [item.sNodeId, item.tNodeId].sort().join('--');
+          pairCounts.set(pk, (pairCounts.get(pk) || 0) + 1);
+        }
+
+        const pairIdxTracker = new Map<string, number>();
+        for (const item of rawPairs) {
+          const {
+            rel,
+            sNodeId,
+            tNodeId,
+            edgeTier,
+            baseEdgeZ,
+            isEdgeHighlighted,
+            isEdgeSelected,
+          } = item;
+          const pk = [sNodeId, tNodeId].sort().join('--');
+          const pairIndex = pairIdxTracker.get(pk) || 0;
+          pairIdxTracker.set(pk, pairIndex + 1);
+          const pairTotal = pairCounts.get(pk) || 1;
+
+          const handles = resolveBestHandles(
+            sNodeId,
+            tNodeId,
+            rel.sourceHandle,
+            rel.targetHandle,
+            nodes
+          );
+          const canEditRel = canManageRelationship(actor, rel, currentBundle);
+
+          edges.push({
+            id: `rel:${rel.id}__${sNodeId}__${tNodeId}`,
+            source: sNodeId,
+            target: tNodeId,
+            sourceHandle: handles.sourceHandle,
+            targetHandle: handles.targetHandle,
+            type: 'smartRelation',
+            reconnectable: isEdgeSelected && canEditRel,
+            zIndex: isEdgeHighlighted ? 40 : baseEdgeZ,
+            markerEnd:
+              rel.direction === 'forward' || rel.direction === 'bidirectional'
+                ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
+                : undefined,
+            markerStart:
+              rel.direction === 'bidirectional'
+                ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
+                : undefined,
+            data: {
+              relationshipId: rel.id,
+              label: rel.label,
+              direction: rel.direction,
+              color: rel.color,
+              lineStyle: rel.lineStyle,
+              pairIndex,
+              pairTotal,
+              edgeTier,
+              isHighlighted: isEdgeHighlighted,
+              isSelected: isEdgeSelected,
+              canReconnect: canEditRel,
+              onFocusRelationship: (rid: string) => onSelectEntityKey(`rel:${rid}`),
+              onOpenRelationship: canEditRel
+                ? (rid: string) => onOpenRelationshipEditor(rid)
+                : undefined,
+            },
+          });
+        }
+      } else if (viewMode === 'groups' && showArrowsInGroups) {
         const groupRels = currentBundle.relationships.filter(
           (r) =>
             r.sourceKind === 'group' &&
@@ -711,6 +824,11 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           const pairTotal = pairCounts.get(pk) || 1;
           const srcGrp = currentBundle.groups.find((g) => g.id === rel.sourceId);
           const tgtGrp = currentBundle.groups.find((g) => g.id === rel.targetId);
+          const isSmallGroupRel = srcGrp?.kind === 'small' || tgtGrp?.kind === 'small';
+          const edgeTier: 'largeGroup' | 'smallGroup' = isSmallGroupRel
+            ? 'smallGroup'
+            : 'largeGroup';
+          const baseEdgeZ = isSmallGroupRel ? 12 : 2;
           const isEdgeSelected = selectedEntityKey === `rel:${rel.id}`;
           const isEdgeHighlighted =
             isEdgeSelected ||
@@ -735,8 +853,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             targetHandle: handles.targetHandle,
             type: 'smartRelation',
             reconnectable: isEdgeSelected && permissions.isEditor,
-            // 通常時はカード(10〜18)より背面の zIndex: 2、フォーカス時はカードより前面の zIndex: 40（ラベルはさらに前面の 50）
-            zIndex: isEdgeHighlighted ? 40 : 2,
+            zIndex: isEdgeHighlighted ? 40 : baseEdgeZ,
             markerEnd:
               rel.direction === 'forward' || rel.direction === 'bidirectional'
                 ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
@@ -753,6 +870,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
               lineStyle: rel.lineStyle,
               pairIndex,
               pairTotal,
+              edgeTier,
               isHighlighted: isEdgeHighlighted,
               isSelected: isEdgeSelected,
               canReconnect: permissions.isEditor,
@@ -850,8 +968,10 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         id: key,
         type: 'personNode',
         position: pos,
-        zIndex: selectedEntityKey === key ? 25 : 20,
-        draggable: canEditPersonCard(actor, person, currentBundle) && interactionMode === 'move',
+        // レイヤー9: ユーザカード（zIndex: 30、選択時35）
+        zIndex: selectedEntityKey === key ? 35 : 30,
+        // キャンバス上のドラッグ移動は管理者・編集者のみ可能
+        draggable: permissions.isEditor && interactionMode === 'move',
         data: {
           person,
           resolved,
@@ -872,78 +992,81 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
       });
     });
 
-    // 人物間の関係線（SmartRelationshipEdge: 片方向は発信元の根本寄り、双方向は中央、相互別方向でも重ならない曲率オフセット付き）
-    const personRels = currentBundle.relationships.filter(
-      (r) =>
-        r.sourceKind === 'person' &&
-        r.targetKind === 'person' &&
-        visiblePersonKeys.has(`person:${r.sourceId}`) &&
-        visiblePersonKeys.has(`person:${r.targetId}`)
-    );
-
-    const pairCounts = new Map<string, number>();
-    for (const r of personRels) {
-      const pk = [`person:${r.sourceId}`, `person:${r.targetId}`].sort().join('--');
-      pairCounts.set(pk, (pairCounts.get(pk) || 0) + 1);
-    }
-
-    const pairIdxTracker = new Map<string, number>();
-    for (const rel of personRels) {
-      const sKey = `person:${rel.sourceId}`;
-      const tKey = `person:${rel.targetId}`;
-      const pk = [sKey, tKey].sort().join('--');
-      const pairIndex = pairIdxTracker.get(pk) || 0;
-      pairIdxTracker.set(pk, pairIndex + 1);
-      const pairTotal = pairCounts.get(pk) || 1;
-      const isEdgeSelected = selectedEntityKey === `rel:${rel.id}`;
-      const isEdgeHighlighted =
-        isEdgeSelected || selectedEntityKey === sKey || selectedEntityKey === tKey;
-
-      const handles = resolveBestHandles(
-        sKey,
-        tKey,
-        rel.sourceHandle,
-        rel.targetHandle,
-        nodes
+    // 人物間の関係線（矢印表示ONのとき表示、デフォルトON）
+    if (activeDiagram.filterConfig?.showRelationships !== false) {
+      const personRels = currentBundle.relationships.filter(
+        (r) =>
+          r.sourceKind === 'person' &&
+          r.targetKind === 'person' &&
+          visiblePersonKeys.has(`person:${r.sourceId}`) &&
+          visiblePersonKeys.has(`person:${r.targetId}`)
       );
-      const canEditRel = canManageRelationship(actor, rel, currentBundle);
 
-      edges.push({
-        id: `rel:${rel.id}`,
-        source: sKey,
-        target: tKey,
-        sourceHandle: handles.sourceHandle,
-        targetHandle: handles.targetHandle,
-        type: 'smartRelation',
-        reconnectable: isEdgeSelected && canEditRel,
-        // 通常時は人物カード(20〜25)より背面の zIndex: 2（ラベルは zIndex: 6）、
-        // 人物または線にワンクリックでフォーカスを当てた時は人物カードより前面の zIndex: 40（ラベルはさらに前面の 50）
-        zIndex: isEdgeHighlighted ? 40 : 2,
-        markerEnd:
-          rel.direction === 'forward' || rel.direction === 'bidirectional'
-            ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
-            : undefined,
-        markerStart:
-          rel.direction === 'bidirectional'
-            ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
-            : undefined,
-        data: {
-          relationshipId: rel.id,
-          label: rel.label,
-          direction: rel.direction,
-          color: rel.color,
-          lineStyle: rel.lineStyle,
-          pairIndex,
-          pairTotal,
-          isHighlighted: isEdgeHighlighted,
-          isSelected: isEdgeSelected,
-          canReconnect: canEditRel,
-          onFocusRelationship: (rid: string) => onSelectEntityKey(`rel:${rid}`),
-          onOpenRelationship: canEditRel
-            ? (rid: string) => onOpenRelationshipEditor(rid)
-            : undefined,
-        },
-      });
+      const pairCounts = new Map<string, number>();
+      for (const r of personRels) {
+        const pk = [`person:${r.sourceId}`, `person:${r.targetId}`].sort().join('--');
+        pairCounts.set(pk, (pairCounts.get(pk) || 0) + 1);
+      }
+
+      const pairIdxTracker = new Map<string, number>();
+      for (const rel of personRels) {
+        const sKey = `person:${rel.sourceId}`;
+        const tKey = `person:${rel.targetId}`;
+        const pk = [sKey, tKey].sort().join('--');
+        const pairIndex = pairIdxTracker.get(pk) || 0;
+        pairIdxTracker.set(pk, pairIndex + 1);
+        const pairTotal = pairCounts.get(pk) || 1;
+        const isEdgeSelected = selectedEntityKey === `rel:${rel.id}`;
+        const isEdgeHighlighted =
+          isEdgeSelected || selectedEntityKey === sKey || selectedEntityKey === tKey;
+
+        const handles = resolveBestHandles(
+          sKey,
+          tKey,
+          rel.sourceHandle,
+          rel.targetHandle,
+          nodes
+        );
+        const canEditRel = canManageRelationship(actor, rel, currentBundle);
+
+        edges.push({
+          id: `rel:${rel.id}`,
+          source: sKey,
+          target: tKey,
+          sourceHandle: handles.sourceHandle,
+          targetHandle: handles.targetHandle,
+          type: 'smartRelation',
+          reconnectable: isEdgeSelected && canEditRel,
+          // 通常時はユーザ矢印（zIndex: 22、ラベル: 24）＜ ユーザカード（30〜35）
+          // フォーカス時は矢印（zIndex: 40）＜ ラベル（50）
+          zIndex: isEdgeHighlighted ? 40 : 22,
+          markerEnd:
+            rel.direction === 'forward' || rel.direction === 'bidirectional'
+              ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
+              : undefined,
+          markerStart:
+            rel.direction === 'bidirectional'
+              ? { type: MarkerType.ArrowClosed, color: rel.color, width: 18, height: 18 }
+              : undefined,
+          data: {
+            relationshipId: rel.id,
+            label: rel.label,
+            direction: rel.direction,
+            color: rel.color,
+            lineStyle: rel.lineStyle,
+            pairIndex,
+            pairTotal,
+            edgeTier: 'person',
+            isHighlighted: isEdgeHighlighted,
+            isSelected: isEdgeSelected,
+            canReconnect: canEditRel,
+            onFocusRelationship: (rid: string) => onSelectEntityKey(`rel:${rid}`),
+            onOpenRelationship: canEditRel
+              ? (rid: string) => onOpenRelationshipEditor(rid)
+              : undefined,
+          },
+        });
+      }
     }
 
     return { computedNodes: nodes, computedEdges: edges };
@@ -1026,12 +1149,12 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
   );
 
   // ドラッグ中のリアルタイム判定（別グループへの移動 or Ctrl/右ドラッグによるコピー表示）
+  // ※ドラッグ移動は管理者・編集者のみ可能
   const handleNodeDrag = useCallback(
     (event: React.MouseEvent | MouseEvent | TouchEvent, node: Node) => {
+      if (!permissions.isEditor) return;
       if (!activeDiagram || activeDiagram.viewMode !== 'mixed' || !currentBundle) return;
       if (!node.id.startsWith('mem:') && !node.id.startsWith('unaffiliated:')) return;
-      const person = node.data?.person as Person | undefined;
-      if (!person || !canEditPersonCard(actor, person, currentBundle)) return;
 
       const isCopy =
         ('ctrlKey' in event && Boolean(event.ctrlKey)) ||
@@ -1061,10 +1184,10 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         setDragHoverGroupId(null);
       }
     },
-    [activeDiagram, actor, currentBundle, findTargetGroupAtAbsolutePoint, nodes]
+    [activeDiagram, currentBundle, findTargetGroupAtAbsolutePoint, nodes, permissions.isEditor]
   );
 
-  // ドラッグ終了時の処理：
+  // ドラッグ終了時の処理（管理者・編集者のみ可能）：
   // - 初期画面（所属中心）で人物ノードを別のグループ枠へドロップした場合：
   //   - 通常ドラッグ：元の所属を新しいグループへ「移動」
   //   - Ctrl+ドラッグ（またはAlt/Cmd/右ドラッグ）：元の所属を残したまま新しいグループにも「コピー（複数所属追加）」
@@ -1073,12 +1196,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     async (event: React.MouseEvent | MouseEvent | TouchEvent, node: Node) => {
       setDragHoverGroupId(null);
       setDragIsCopyMode(false);
-      if (!activeDiagram || !currentBundle) return;
-      const draggedPerson = node.data?.person as Person | undefined;
-      const canDragNode =
-        permissions.isEditor ||
-        Boolean(draggedPerson && canEditPersonCard(actor, draggedPerson, currentBundle));
-      if (!canDragNode) return;
+      if (!activeDiagram || !currentBundle || !permissions.isEditor) return;
 
       if (
         activeDiagram.viewMode === 'mixed' &&
@@ -1148,7 +1266,6 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     },
     [
       activeDiagram,
-      actor,
       currentBundle,
       findTargetGroupAtAbsolutePoint,
       moveOrCopyMembershipByDrag,
@@ -1224,7 +1341,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
       if (!currentBundle || !newConnection.source || !newConnection.target) {
         return;
       }
-      const relId = oldEdge.id.replace('rel:', '');
+      const relId = oldEdge.id.replace('rel:', '').split('__')[0];
       const existingRel = currentBundle.relationships.find((r) => r.id === relId);
       if (!existingRel) return;
 
@@ -1326,35 +1443,92 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
   );
   const canInteractOnCanvas = permissions.isEditor || Boolean(myLinkedPerson);
 
+  const isArrowsVisible =
+    activeDiagram.viewMode === 'mixed'
+      ? Boolean(activeDiagram.filterConfig?.showMixedArrows)
+      : activeDiagram.filterConfig?.showRelationships !== false;
+
+  const handleToggleArrows = () => {
+    if (activeDiagram.viewMode === 'mixed') {
+      updateDiagram(activeDiagram.id, {
+        filterConfig: {
+          ...activeDiagram.filterConfig,
+          showMixedArrows: !activeDiagram.filterConfig?.showMixedArrows,
+        },
+      });
+    } else {
+      updateDiagram(activeDiagram.id, {
+        filterConfig: {
+          ...activeDiagram.filterConfig,
+          showRelationships: activeDiagram.filterConfig?.showRelationships === false,
+        },
+      });
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden">
-      {/* 1. 相関図タブバー */}
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-100/90 px-3 pt-1.5 gap-2 overflow-x-auto">
+      {/* 1. 相関図タブバー（〇〇中心の表記を無くしてコンパクト化・ダブルクリックでタブ名変更） */}
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-100/90 px-2.5 pt-1 gap-2 overflow-x-auto">
         <div className="flex items-center gap-1 overflow-x-auto">
           {currentBundle.diagrams.map((diag) => {
             const isActive = diag.id === activeDiagram.id;
+            const cleanTabName =
+              diag.name
+                .replace(/[（(](所属中心|人中心|グループ中心|所属|人|グループ)[)）]/g, '')
+                .trim() || diag.name;
+
             return (
               <div
                 key={diag.id}
                 onClick={() => setActiveDiagramId(diag.id)}
-                className={`group flex items-center gap-2 rounded-t-xl px-3.5 py-2 text-xs font-bold cursor-pointer border-t border-x transition select-none whitespace-nowrap ${
+                onDoubleClick={() => {
+                  if (permissions.isEditor) {
+                    setEditingTabId(diag.id);
+                    setDiagramTitleDraft(cleanTabName);
+                  }
+                }}
+                title={
+                  permissions.isEditor
+                    ? 'クリックで切替 / ダブルクリックでタブ名変更'
+                    : 'クリックでタブ切替'
+                }
+                className={`group flex items-center gap-1.5 rounded-t-lg px-2.5 py-1.5 text-xs font-bold cursor-pointer border-t border-x transition select-none whitespace-nowrap ${
                   isActive
                     ? 'bg-white text-indigo-700 border-slate-200 shadow-2xs'
                     : 'bg-slate-200/60 text-slate-600 border-transparent hover:bg-slate-200 hover:text-slate-900'
                 }`}
               >
-                <Network size={13} className={isActive ? 'text-indigo-600' : 'text-slate-400'} />
-                <span>{diag.name}</span>
-                <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[10px] font-semibold text-slate-500">
-                  {diag.viewMode === 'mixed'
-                    ? '所属中心'
-                    : diag.viewMode === 'people'
-                    ? '人中心'
-                    : 'グループ中心'}
-                </span>
+                <Network size={12} className={isActive ? 'text-indigo-600' : 'text-slate-400'} />
+                {editingTabId === diag.id && permissions.isEditor ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={diagramTitleDraft}
+                    onChange={(e) => setDiagramTitleDraft(e.target.value)}
+                    onBlur={() => {
+                      if (diagramTitleDraft.trim()) {
+                        updateDiagram(diag.id, { name: diagramTitleDraft.trim() });
+                      }
+                      setEditingTabId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === 'Escape') {
+                        if (e.key === 'Enter' && diagramTitleDraft.trim()) {
+                          updateDiagram(diag.id, { name: diagramTitleDraft.trim() });
+                        }
+                        setEditingTabId(null);
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-28 rounded border border-indigo-400 bg-white px-1 py-0 text-xs font-bold text-slate-900 focus:outline-none"
+                  />
+                ) : (
+                  <span>{cleanTabName}</span>
+                )}
 
                 {permissions.isEditor && isActive && (
-                  <div className="flex items-center gap-0.5 ml-1">
+                  <div className="flex items-center gap-0.5 ml-0.5">
                     <button
                       type="button"
                       onClick={(e) => {
@@ -1364,7 +1538,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
                       className="p-0.5 text-slate-400 hover:text-indigo-600 rounded"
                       title="この図を複製"
                     >
-                      <Copy size={12} />
+                      <Copy size={11} />
                     </button>
                     {currentBundle.diagrams.length > 1 && (
                       <button
@@ -1376,7 +1550,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
                         className="p-0.5 text-slate-400 hover:text-rose-600 rounded"
                         title="この図を削除"
                       >
-                        <Trash2 size={12} />
+                        <Trash2 size={11} />
                       </button>
                     )}
                   </div>
@@ -1395,9 +1569,9 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
                   'mixed'
                 )
               }
-              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200/80 mb-1"
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200/80 mb-0.5"
             >
-              <Plus size={14} /> タブ追加
+              <Plus size={13} /> タブ追加
             </button>
           )}
         </div>
@@ -1428,27 +1602,11 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         )}
       </div>
 
-      {/* 2. ツールバー（3つの図モード切替・表示切替・自動整列・PNG書き出し） */}
-      <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-[220px] flex-1 flex-wrap">
-          <div className="min-w-0 max-w-xs">
-            {permissions.isEditor ? (
-              <input
-                type="text"
-                value={diagramTitleDraft}
-                onChange={(e) => setDiagramTitleDraft(e.target.value)}
-                placeholder="図のタイトルを入力..."
-                className="w-full text-sm font-extrabold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-none px-1 py-0.5"
-              />
-            ) : (
-              <h2 className="text-sm font-extrabold text-slate-900 truncate">
-                {activeDiagram.name}
-              </h2>
-            )}
-          </div>
-
-          {/* 3つの図モード切替（初期画面［所属中心］ / 人物図［人中心］ / グループ図［グループ中心］） */}
-          <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+      {/* 2. ツールバー（全表示モード共通・2行にすっきり収まる構成） */}
+      <div className="bg-white border-b border-slate-200 px-3 py-1.5 space-y-1.5">
+        {/* 1行目：図モード切替 ＋ グループ絞り込み・元に戻す・自動整列・PNG書き出し */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex rounded-xl bg-slate-100 p-0.5 border border-slate-200">
             {(
               [
                 { id: 'mixed', label: '初期画面（所属中心）', icon: GitBranch },
@@ -1467,7 +1625,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
                       viewMode: m.id as DiagramViewMode,
                     })
                   }
-                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-extrabold transition ${
+                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-extrabold transition ${
                     active
                       ? 'bg-indigo-600 text-white shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -1481,109 +1639,161 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             })}
           </div>
 
-          {/* 初期画面（所属中心）での人物カードスタイル切替 */}
-          {activeDiagram.viewMode === 'mixed' && (
-            <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
-              {(
-                [
-                  { id: 'card', label: 'カード表示', icon: LayoutList },
-                  { id: 'compact', label: 'コンパクト表示', icon: LayoutGrid },
-                ] as const
-              ).map((st) => {
-                const Icon = st.icon;
-                const active = activeDiagram.nodeStyle === st.id;
-                return (
-                  <button
-                    key={st.id}
-                    type="button"
-                    onClick={() =>
-                      updateDiagram(activeDiagram.id, {
-                        nodeStyle: st.id as NodeDisplayStyle,
-                      })
-                    }
-                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition ${
-                      active
-                        ? 'bg-white text-indigo-700 shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                    data-testid={`nodestyle-${st.id}`}
-                  >
-                    <Icon size={13} />
-                    <span>{st.label}</span>
-                  </button>
-                );
-              })}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
+              <Filter size={13} className="text-slate-400" />
+              <select
+                value={focusedGroupId || ''}
+                onChange={(e) =>
+                  updateDiagram(activeDiagram.id, {
+                    filterConfig: {
+                      ...activeDiagram.filterConfig,
+                      focusedGroupId: e.target.value || null,
+                    },
+                  })
+                }
+                className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none"
+              >
+                <option value="">すべてのグループを表示</option>
+                {currentBundle.groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.kind === 'large' ? '■ ' : '└ '}
+                    {g.name} で絞り込み
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+
+            {permissions.isEditor && (
+              <>
+                <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    disabled={!canUndo}
+                    onClick={undoLastAction}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+                  >
+                    <Undo2 size={13} /> 元に戻す
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canRedo}
+                    onClick={redoLastAction}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+                  >
+                    <Redo2 size={13} /> やり直す
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAutoLayout}
+                  className="inline-flex items-center gap-1 rounded-xl bg-indigo-50 border border-indigo-200 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                >
+                  <Sparkles size={13} />
+                  自動整列
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              disabled={isExportingPng}
+              onClick={handleExportPng}
+              className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-2.5 py-1 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              <Camera size={13} />
+              {isExportingPng ? 'PNG出力中...' : 'PNG書き出し'}
+            </button>
+          </div>
         </div>
 
-        {/* 右側操作ボタン */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
-            <Filter size={13} className="text-slate-400" />
-            <select
-              value={focusedGroupId || ''}
-              onChange={(e) =>
-                updateDiagram(activeDiagram.id, {
-                  filterConfig: {
-                    ...activeDiagram.filterConfig,
-                    focusedGroupId: e.target.value || null,
-                  },
-                })
-              }
-              className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none"
-            >
-              <option value="">すべてのグループを表示</option>
-              {currentBundle.groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.kind === 'large' ? '■ ' : '└ '}
-                  {g.name} で絞り込み
-                </option>
-              ))}
-            </select>
+        {/* 2行目：カード表示・コンパクト表示 ＋ 移動・つなぐ ＋ 矢印表示（ON/OFF・デフォルトOFF） */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* カードスタイル切替（全モード共通配置） */}
+          <div className="inline-flex rounded-xl bg-slate-100 p-0.5 border border-slate-200">
+            {(
+              [
+                { id: 'card', label: 'カード表示', icon: LayoutList },
+                { id: 'compact', label: 'コンパクト表示', icon: LayoutGrid },
+              ] as const
+            ).map((st) => {
+              const Icon = st.icon;
+              const active = activeDiagram.nodeStyle === st.id;
+              return (
+                <button
+                  key={st.id}
+                  type="button"
+                  onClick={() =>
+                    updateDiagram(activeDiagram.id, {
+                      nodeStyle: st.id as NodeDisplayStyle,
+                    })
+                  }
+                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                    active
+                      ? 'bg-white text-indigo-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  data-testid={`nodestyle-${st.id}`}
+                >
+                  <Icon size={13} />
+                  <span>{st.label}</span>
+                </button>
+              );
+            })}
           </div>
 
-          {permissions.isEditor && (
-            <>
-              <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5">
-                <button
-                  type="button"
-                  disabled={!canUndo}
-                  onClick={undoLastAction}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-35"
-                >
-                  <Undo2 size={14} /> 元に戻す
-                </button>
-                <button
-                  type="button"
-                  disabled={!canRedo}
-                  onClick={redoLastAction}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-35"
-                >
-                  <Redo2 size={14} /> やり直す
-                </button>
-              </div>
+          {/* 移動 / つなぐ（関係線作成）切替（キャンバス上からツールバー2行目へ統合） */}
+          <div className="inline-flex rounded-xl bg-slate-100 p-0.5 border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setInteractionMode('move')}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-extrabold transition ${
+                interactionMode === 'move'
+                  ? 'bg-indigo-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <MousePointerClick size={13} /> 移動 / 所属ドラッグ
+            </button>
+            <button
+              type="button"
+              disabled={!canInteractOnCanvas}
+              onClick={() => setInteractionMode('connect')}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-extrabold transition disabled:opacity-40 ${
+                interactionMode === 'connect'
+                  ? 'bg-indigo-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Link2 size={13} /> つなぐ（関係線作成）
+            </button>
+          </div>
 
-              <button
-                type="button"
-                onClick={handleAutoLayout}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
-              >
-                <Sparkles size={14} />
-                自動整列
-              </button>
-            </>
-          )}
-
+          {/* 矢印表示（ON/OFF・初期画面はデフォルトOFF） */}
           <button
             type="button"
-            disabled={isExportingPng}
-            onClick={handleExportPng}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+            onClick={handleToggleArrows}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold transition ${
+              isArrowsVisible
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                : 'bg-slate-100 text-slate-600 border-slate-200 hover:text-slate-900'
+            }`}
+            data-testid="toggle-arrows-btn"
           >
-            <Camera size={14} />
-            {isExportingPng ? 'PNG出力中...' : 'PNG書き出し'}
+            <Link2 size={13} />
+            <span>矢印表示：{isArrowsVisible ? 'ON' : 'OFF'}</span>
           </button>
+
+          {selectedEntityKey && (
+            <button
+              type="button"
+              onClick={() => onSelectEntityKey(null)}
+              className="inline-flex items-center gap-1 rounded-xl bg-slate-900 text-white px-2.5 py-1 text-xs font-bold shadow-2xs hover:bg-slate-800"
+            >
+              <X size={13} /> 選択解除
+            </button>
+          )}
         </div>
       </div>
 
@@ -1593,49 +1803,9 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         onContextMenu={(e) => e.preventDefault()}
         className="relative flex-1 w-full h-full"
       >
-        {/* 中央上部ピルバー */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 flex-wrap justify-center">
-          {canInteractOnCanvas && (
-            <div className="inline-flex rounded-xl bg-white/95 backdrop-blur-xs p-1 shadow-md border border-slate-200">
-              <button
-                type="button"
-                onClick={() => setInteractionMode('move')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1 text-xs font-extrabold transition ${
-                  interactionMode === 'move'
-                    ? 'bg-indigo-600 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <MousePointerClick size={13} /> 移動 / 所属ドラッグ
-              </button>
-              <button
-                type="button"
-                onClick={() => setInteractionMode('connect')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1 text-xs font-extrabold transition ${
-                  interactionMode === 'connect'
-                    ? 'bg-indigo-600 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Link2 size={13} /> つなぐ（関係線作成）
-              </button>
-            </div>
-          )}
-
-          {selectedEntityKey && (
-            <button
-              type="button"
-              onClick={() => onSelectEntityKey(null)}
-              className="inline-flex items-center gap-1 rounded-xl bg-slate-900/90 text-white px-3 py-1.5 text-xs font-bold shadow-md hover:bg-slate-800"
-            >
-              <X size={13} /> 選択解除
-            </button>
-          )}
-        </div>
-
         {/* ドラッグ移動・コピー完了トースト */}
         {dragFeedbackToast && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 rounded-xl bg-slate-900 text-white px-4 py-2 text-xs font-bold shadow-lg border border-slate-700">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 rounded-xl bg-slate-900 text-white px-4 py-2 text-xs font-bold shadow-lg border border-slate-700">
             {dragFeedbackToast}
           </div>
         )}
@@ -1646,13 +1816,16 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             <>
               <span className="font-extrabold text-indigo-700">【初期画面：所属中心】</span>
               <span>クリック＝フォーカス / <strong>ダブルクリック＝詳細表示</strong></span>
-              <span>/</span>
-              <span>別枠へドラッグ＝<strong>所属移動</strong></span>
-              <span>/</span>
-              <span className="text-emerald-700 font-bold">
-                Ctrl+ドラッグ＝<strong>所属コピー（兼務）</strong>
-              </span>
-              <span className="text-slate-400">※関係線は人物図・グループ図で表示</span>
+              {permissions.isEditor && (
+                <>
+                  <span>/</span>
+                  <span>別枠へドラッグ＝<strong>所属移動</strong></span>
+                  <span>/</span>
+                  <span className="text-emerald-700 font-bold">
+                    Ctrl+ドラッグ＝<strong>所属コピー（兼務）</strong>
+                  </span>
+                </>
+              )}
             </>
           )}
           {activeDiagram.viewMode === 'people' && (
@@ -1685,7 +1858,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           onEdgeClick={(e, edge) => {
             e.stopPropagation();
             if (!edge.id.startsWith('rel:')) return;
-            const relId = edge.id.replace('rel:', '');
+            const relId = edge.id.replace('rel:', '').split('__')[0];
             const rel = currentBundle.relationships.find((r) => r.id === relId);
             const now = Date.now();
             const prev = lastEdgeTapRef.current;
@@ -1696,13 +1869,13 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
                 onOpenRelationshipEditor(relId);
               }
             } else {
-              onSelectEntityKey(edge.id);
+              onSelectEntityKey(`rel:${relId}`);
             }
           }}
           onEdgeDoubleClick={(e, edge) => {
             e.stopPropagation();
             if (edge.id.startsWith('rel:')) {
-              const relId = edge.id.replace('rel:', '');
+              const relId = edge.id.replace('rel:', '').split('__')[0];
               const rel = currentBundle.relationships.find((r) => r.id === relId);
               if (rel && canManageRelationship(actor, rel, currentBundle)) {
                 onOpenRelationshipEditor(relId);

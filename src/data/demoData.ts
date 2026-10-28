@@ -715,12 +715,12 @@ export function createInitialDemoProjects(): Record<string, ProjectBundle> {
     },
   ];
 
-  // 相関図タブ（3つのモードそれぞれに対応した初期タブを用意、デフォルトは「初期画面（所属中心）」）
+  // 相関図タブ（3つのモードそれぞれに対応した初期タブを用意、デフォルトは「初期画面」）
   const diagrams: Diagram[] = [
     {
       id: 'diag_mixed_main',
       projectId: DEMO_PROJECT_ID,
-      name: '初期画面（所属中心）',
+      name: '初期画面',
       description: '大グループ・小グループの枠内に所属メンバーと「ここでのロール」を表示するメイン相関図',
       viewMode: 'mixed',
       nodeStyle: 'card',
@@ -735,6 +735,7 @@ export function createInitialDemoProjects(): Record<string, ProjectBundle> {
         showMemberships: true,
         showRelationships: true,
         showGroupHierarchy: true,
+        showMixedArrows: false,
       },
       order: 0,
       updatedAt: now,
@@ -742,7 +743,7 @@ export function createInitialDemoProjects(): Record<string, ProjectBundle> {
     {
       id: 'diag_people_only',
       projectId: DEMO_PROJECT_ID,
-      name: '人物図（人中心）',
+      name: '人物図',
       description: '人名の右脇に所属グループとロールをずらっと並べ、人物間の関係線を文字情報つきで表示する図',
       viewMode: 'people',
       nodeStyle: 'card',
@@ -772,7 +773,7 @@ export function createInitialDemoProjects(): Record<string, ProjectBundle> {
     {
       id: 'diag_groups_only',
       projectId: DEMO_PROJECT_ID,
-      name: 'グループ図（グループ中心）',
+      name: 'グループ図',
       description: 'グループ枠内に所属メンバーとロールをずらっと並べ、グループ間の関係線を文字情報つきで表示する図',
       viewMode: 'groups',
       nodeStyle: 'card',

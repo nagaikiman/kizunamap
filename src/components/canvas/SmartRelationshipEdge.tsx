@@ -14,6 +14,7 @@ export interface SmartRelationshipEdgeData extends Record<string, unknown> {
   lineStyle: RelationLineStyle;
   pairIndex: number; // 同一ペア（A-B間）での通し番号 (0, 1, 2...)
   pairTotal: number; // 同一ペア（A-B間）の関係総数
+  edgeTier?: 'largeGroup' | 'smallGroup' | 'person'; // レイヤー順制御用（大グループ矢印 / 小グループ矢印 / ユーザ矢印）
   isHighlighted: boolean;
   isSelected?: boolean; // この関係線自体が選択されているか
   canReconnect?: boolean; // 結点ドラッグによる結合場所の付け替えが可能か
@@ -87,10 +88,15 @@ export const SmartRelationshipEdge: React.FC<EdgeProps> = ({
   const labelX = invT * invT * sourceX + 2 * invT * t * ctrlX + t * t * targetX;
   const labelY = invT * invT * sourceY + 2 * invT * t * ctrlY + t * t * targetY;
 
-  // 表示順（z-index）制御：
-  // - 通常時：矢印（zIndex: 2）＜ 関係内容ラベル（zIndex: 6）＜ 人・グループカード（zIndex: 10〜25）
-  // - フォーカス時（ワンクリック選択中）：人・グループカード（10〜25）＜ フォーカスされた矢印（zIndex: 40）＜ フォーカスされた関係内容ラベル（zIndex: 50）
-  const labelZIndex = isHighlighted ? 50 : 6;
+  // 表示順（z-index）制御（背面から）：
+  // 1. 大グループ矢印(2) → 2. 大グループ矢印内容(4) → 3. 大グループカード(10)
+  // → 4. 小グループ矢印(12) → 5. 小グループ矢印内容(14) → 6. 小グループカード(20)
+  // → 7. ユーザ矢印(22) → 8. ユーザ矢印内容(24) → 9. ユーザカード(30)
+  // - フォーカス時（ワンクリック選択中）：フォーカスされた矢印(40) → フォーカスされた矢印内容(50)
+  const edgeTier = d.edgeTier || 'person';
+  const baseLabelZIndex =
+    edgeTier === 'largeGroup' ? 4 : edgeTier === 'smallGroup' ? 14 : 24;
+  const labelZIndex = isHighlighted ? 50 : baseLabelZIndex;
 
   return (
     <>
