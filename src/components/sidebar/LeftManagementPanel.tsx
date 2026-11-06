@@ -1026,11 +1026,12 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                             <>
                               <div className="flex items-center gap-2 min-w-0">
                                 {permissions.isEditor && (
-                                  <GripVertical
-                                    size={13}
-                                    className="text-slate-400 hover:text-slate-600 cursor-grab shrink-0 -ml-1 active:cursor-grabbing"
-                                    title="ドラッグして並び順を変更"
-                                  />
+                                  <span title="ドラッグして並び順を変更" className="flex items-center">
+                                    <GripVertical
+                                      size={13}
+                                      className="text-slate-400 hover:text-slate-600 cursor-grab shrink-0 -ml-1 active:cursor-grabbing"
+                                    />
+                                  </span>
                                 )}
                                 <span
                                   className="w-3 h-3 rounded-full shrink-0"

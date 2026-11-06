@@ -295,6 +295,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     if (!currentBundle || !activeDiagram) {
       return { computedNodes: [] as Node[], computedEdges: [] as Edge[] };
     }
+    const bundle = currentBundle;
 
     const viewMode = activeDiagram.viewMode;
     const nodeStyle = activeDiagram.nodeStyle;
@@ -321,14 +322,14 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     }): boolean => {
       if (roleSel.size > 0) {
         const roleIds = new Set<string>(person.globalRoleIds);
-        for (const m of currentBundle.memberships) {
+        for (const m of bundle.memberships) {
           if (m.personId === person.id) m.roleIds.forEach((r) => roleIds.add(r));
         }
         if (![...roleIds].some((r) => roleSel.has(r))) return false;
       }
       if (skillSel.size > 0 && !person.skillIds.some((s) => skillSel.has(s))) return false;
       if (relTagSel.size > 0) {
-        const linked = currentBundle.relationships.some(
+        const linked = bundle.relationships.some(
           (r) =>
             relPassesTag(r) &&
             ((r.sourceKind === 'person' && r.sourceId === person.id) ||
