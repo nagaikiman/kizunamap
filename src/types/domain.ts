@@ -200,8 +200,10 @@ export interface NodePosition {
 export interface DiagramFilterConfig {
   focusedEntityId: string | null;
   focusedGroupId: string | null;
+  selectedGroupIds?: string[]; // 複数選択フィルタ（未設定時は focusedGroupId を使用）
   selectedRoleIds: string[];
   selectedSkillIds: string[];
+  selectedRelationTagIds?: string[]; // 関係タグで絞り込み
   showMemberships: boolean;
   showRelationships: boolean;
   showGroupHierarchy: boolean;

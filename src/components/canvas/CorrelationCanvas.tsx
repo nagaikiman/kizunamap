@@ -283,7 +283,45 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     const viewMode = activeDiagram.viewMode;
     const nodeStyle = activeDiagram.nodeStyle;
     const collapsedSet = new Set(activeDiagram.collapsedGroupIds);
-    const focusedGroupId = activeDiagram.filterConfig?.focusedGroupId || null;
+    const fc = activeDiagram.filterConfig;
+    // グループ・ロール・スキル・関係タグの複数選択フィルタ（カテゴリ内はOR、カテゴリ間はAND）
+    const focusedGroupIds = new Set<string>(
+      fc?.selectedGroupIds && fc.selectedGroupIds.length > 0
+        ? fc.selectedGroupIds
+        : fc?.focusedGroupId
+        ? [fc.focusedGroupId]
+        : []
+    );
+    const hasFocusedGroup = focusedGroupIds.size > 0;
+    const roleSel = new Set(fc?.selectedRoleIds ?? []);
+    const skillSel = new Set(fc?.selectedSkillIds ?? []);
+    const relTagSel = new Set(fc?.selectedRelationTagIds ?? []);
+    const relPassesTag = (rel: { tagIds: string[] }): boolean =>
+      relTagSel.size === 0 || rel.tagIds.some((t) => relTagSel.has(t));
+    const personPassesAttr = (person: {
+      id: string;
+      globalRoleIds: string[];
+      skillIds: string[];
+    }): boolean => {
+      if (roleSel.size > 0) {
+        const roleIds = new Set<string>(person.globalRoleIds);
+        for (const m of currentBundle.memberships) {
+          if (m.personId === person.id) m.roleIds.forEach((r) => roleIds.add(r));
+        }
+        if (![...roleIds].some((r) => roleSel.has(r))) return false;
+      }
+      if (skillSel.size > 0 && !person.skillIds.some((s) => skillSel.has(s))) return false;
+      if (relTagSel.size > 0) {
+        const linked = currentBundle.relationships.some(
+          (r) =>
+            relPassesTag(r) &&
+            ((r.sourceKind === 'person' && r.sourceId === person.id) ||
+              (r.targetKind === 'person' && r.targetId === person.id))
+        );
+        if (!linked) return false;
+      }
+      return true;
+    };
     const q = searchQuery.trim().toLowerCase();
     // 結合点（4辺の青い点）は「つなぐ（関係線作成）」モード時または関係線選択時のみ表示し、「移動 / 所属ドラッグ」時およびPNG出力時は非表示にする
     const showHandles =
@@ -351,9 +389,9 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
       // A. 大グループ枠ノード（最背面・親コンテナ）
       const largeGroups = currentBundle.groups.filter((g) => g.kind === 'large');
       for (const lg of largeGroups) {
-        if (focusedGroupId && lg.id !== focusedGroupId) {
+        if (hasFocusedGroup && !focusedGroupIds.has(lg.id)) {
           const isParentOfFocused = smallGroups.some(
-            (sg) => sg.id === focusedGroupId && sg.parentGroupId === lg.id
+            (sg) => focusedGroupIds.has(sg.id) && sg.parentGroupId === lg.id
           );
           if (!isParentOfFocused) continue;
         }
@@ -393,6 +431,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           .map((m) => {
             const p = currentBundle.people.find((per) => per.id === m.personId);
             if (!p) return null;
+            if (!personPassesAttr(p)) return null;
             const res = resolvePersonView(
               p,
               actor,
@@ -462,7 +501,11 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         if (!sg.parentGroupId || collapsedSet.has(sg.parentGroupId)) continue;
         const parentNodeKey = `group:${sg.parentGroupId}`;
         if (!nodes.some((n) => n.id === parentNodeKey)) continue;
-        if (focusedGroupId && sg.id !== focusedGroupId && sg.parentGroupId !== focusedGroupId) {
+        if (
+          hasFocusedGroup &&
+          !focusedGroupIds.has(sg.id) &&
+          !(sg.parentGroupId && focusedGroupIds.has(sg.parentGroupId))
+        ) {
           continue;
         }
 
@@ -472,6 +515,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           .map((m) => {
             const p = currentBundle.people.find((per) => per.id === m.personId);
             if (!p) return null;
+            if (!personPassesAttr(p)) return null;
             const res = resolvePersonView(
               p,
               actor,
@@ -546,6 +590,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           const person = currentBundle.people.find((p) => p.id === mem.personId);
           const grp = currentBundle.groups.find((g) => g.id === mem.groupId);
           if (!person || !grp) continue;
+          if (!personPassesAttr(person)) continue;
 
           const parentGroupNodeId = `group:${grp.id}`;
           if (!nodes.some((n) => n.id === parentGroupNodeId)) continue;
@@ -613,7 +658,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         const affiliatedIds = new Set(currentBundle.memberships.map((m) => m.personId));
         for (const person of currentBundle.people) {
           if (affiliatedIds.has(person.id)) continue;
-          if (focusedGroupId) continue;
+          if (hasFocusedGroup) continue;
+          if (!personPassesAttr(person)) continue;
 
           const unKey = `unaffiliated:${person.id}`;
           const pos =
@@ -687,6 +733,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         }[] = [];
 
         for (const rel of currentBundle.relationships) {
+          if (!relPassesTag(rel)) continue;
           const srcNodeIds =
             rel.sourceKind === 'group'
               ? renderedNodeIdSet.has(`group:${rel.sourceId}`)
@@ -812,6 +859,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           (r) =>
             r.sourceKind === 'group' &&
             r.targetKind === 'group' &&
+            relPassesTag(r) &&
             renderedNodeIdSet.has(`group:${r.sourceId}`) &&
             renderedNodeIdSet.has(`group:${r.targetId}`)
         );
@@ -913,13 +961,14 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     currentBundle.people.forEach((person, idx) => {
       const personMems = currentBundle.memberships.filter((m) => m.personId === person.id);
 
-      if (focusedGroupId) {
+      if (hasFocusedGroup) {
         const childIds = currentBundle.groups
-          .filter((g) => g.parentGroupId === focusedGroupId)
+          .filter((g) => g.parentGroupId && focusedGroupIds.has(g.parentGroupId))
           .map((g) => g.id);
-        const targetSet = new Set([focusedGroupId, ...childIds]);
+        const targetSet = new Set([...focusedGroupIds, ...childIds]);
         if (!personMems.some((m) => targetSet.has(m.groupId))) return;
       }
+      if (!personPassesAttr(person)) return;
 
       const key = `person:${person.id}`;
       visiblePersonKeys.add(key);
@@ -1007,6 +1056,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         (r) =>
           r.sourceKind === 'person' &&
           r.targetKind === 'person' &&
+          relPassesTag(r) &&
           visiblePersonKeys.has(`person:${r.sourceId}`) &&
           visiblePersonKeys.has(`person:${r.targetId}`)
       );

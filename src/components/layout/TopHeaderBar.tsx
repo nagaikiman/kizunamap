@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useAppState } from '../../context/AppStateContext';
 import { signInWithGooglePopup, signOutFirebase } from '../../services/firebaseClient';
-import { canCreateSelfPerson } from '../../utils/securityGuards';
+import { canCreateSelfPerson, evaluateProjectAccess } from '../../utils/securityGuards';
 
 interface TopHeaderBarProps {
   onOpenAdminSettings: (tab?: 'project' | 'members' | 'yaml' | 'testUsers') => void;
@@ -59,6 +59,11 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
 
   const rolePrefix = permissions.isAdmin ? '管理：' : '一般：';
 
+  // いずれかのプロジェクトの管理者であればプロジェクト一覧を表示できる
+  const isAnyProjectAdmin = Object.values(projectsMap).some(
+    (b) => evaluateProjectAccess(actor, b).isAdmin
+  );
+
   return (
     <div className="flex flex-col shrink-0 z-20">
       {/* メイン上部バー */}
@@ -73,21 +78,30 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
 
           <div className="h-5 w-px bg-slate-200 hidden sm:block" />
 
-          {/* プロジェクト選択ドロップダウン */}
+          {/* プロジェクト選択ドロップダウン（一覧は管理者のみ。一般の人は開いているプロジェクト名のみ表示） */}
           <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl px-2.5 py-1 border border-slate-200">
             <FolderKanban size={14} className="text-indigo-600 shrink-0 hidden sm:inline" />
-            <select
-              value={currentProjectId}
-              onChange={(e) => selectProject(e.target.value)}
-              className="bg-transparent text-xs font-extrabold text-slate-800 focus:outline-none max-w-[140px] sm:max-w-[230px] truncate"
-              data-testid="project-selector"
-            >
-              {Object.values(projectsMap).map((b) => (
-                <option key={b.project.id} value={b.project.id}>
-                  {b.project.name}
-                </option>
-              ))}
-            </select>
+            {!isFirebaseConfigured || isAnyProjectAdmin ? (
+              <select
+                value={currentProjectId}
+                onChange={(e) => selectProject(e.target.value)}
+                className="bg-transparent text-xs font-extrabold text-slate-800 focus:outline-none max-w-[140px] sm:max-w-[230px] truncate"
+                data-testid="project-selector"
+              >
+                {Object.values(projectsMap).map((b) => (
+                  <option key={b.project.id} value={b.project.id}>
+                    {b.project.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span
+                className="text-xs font-extrabold text-slate-800 max-w-[140px] sm:max-w-[230px] truncate"
+                data-testid="project-name-label"
+              >
+                {currentBundle?.project.name ?? ''}
+              </span>
+            )}
           </div>
 
           {/* 権限バッジ（アイコン無し・シンプル表示、管理者はクリックで管理設定を開ける） */}

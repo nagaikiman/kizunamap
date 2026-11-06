@@ -540,18 +540,26 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
             shape="rounded"
           />
           <span className="text-xs font-extrabold text-slate-900 truncate">{group.name}</span>
-          <span
-            className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none shrink-0"
-            style={{ backgroundColor: group.color }}
-          >
-            {isLarge ? '大グループ' : '小グループ'}
-          </span>
+          {isLarge && (
+            <span
+              className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none shrink-0"
+              style={{ backgroundColor: group.color }}
+            >
+              大グループ
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200">
-            <Users size={11} />
-            直下 {directCount}人{isLarge ? ` / 配下計 ${totalCount}人` : ''}
+          <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200 whitespace-nowrap">
+            {isLarge ? (
+              <>
+                <Users size={11} />
+                直下 {directCount}人 / 配下計 {totalCount}人
+              </>
+            ) : (
+              <>({directCount}人)</>
+            )}
           </span>
 
           {isLarge && hasChildren && (

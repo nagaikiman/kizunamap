@@ -14,10 +14,24 @@ import {
 } from './components/modals/EntityEditorModals';
 import { AdminSettingsModal } from './components/modals/AdminSettingsModal';
 import { DEMO_ADMIN_UID, DEMO_PROJECT_ID } from './data/demoData';
+import { evaluateProjectAccess } from './utils/securityGuards';
 
 const KizunaMapWorkspace: React.FC = () => {
-  const { currentBundle, permissions, selectProject, switchTestUser } = useAppState();
+  const {
+    currentBundle,
+    permissions,
+    selectProject,
+    switchTestUser,
+    actor,
+    projectsMap,
+    isFirebaseConfigured,
+  } = useAppState();
 
+  // 初回アクセス時のURLに ?project= が付いていたか（ドメインのみのアクセスかどうか）
+  const [openedWithProjectLink] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return Boolean(new URLSearchParams(window.location.search).get('project'));
+  });
   const [sidebarTab, setSidebarTab] = useState<LeftSidebarTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEntityKey, setSelectedEntityKey] = useState<string | null>(null);
@@ -43,6 +57,40 @@ const KizunaMapWorkspace: React.FC = () => {
   const [adminModalTab, setAdminModalTab] = useState<
     'project' | 'members' | 'yaml' | 'testUsers' | null
   >(null);
+
+  // 本番環境：プロジェクトのリンク（?project=...）なしでドメインのみアクセスした場合は、
+  // いずれかのプロジェクトの管理者でない限り案内画面を表示（一般の人はリンクを知らないと入れない）
+  const isAnyProjectAdmin = Object.values(projectsMap).some(
+    (b) => evaluateProjectAccess(actor, b).isAdmin
+  );
+  if (isFirebaseConfigured && !openedWithProjectLink && !isAnyProjectAdmin) {
+    return (
+      <div className="flex flex-col h-screen bg-slate-100">
+        <TopHeaderBar
+          onOpenAdminSettings={(t) => setAdminModalTab(t || 'project')}
+          onOpenSelfProfileModal={(pid) => setProfileModalPersonId(pid)}
+        />
+        <div
+          className="flex-1 flex items-center justify-center p-6"
+          data-testid="project-link-required"
+        >
+          <div className="max-w-md w-full rounded-2xl bg-white p-8 shadow-xl border border-slate-200 text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center mx-auto">
+              <Lock size={28} />
+            </div>
+            <h2 className="text-lg font-extrabold text-slate-900">
+              プロジェクトのリンクからアクセスしてください
+            </h2>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              このアプリは、管理者から共有されたプロジェクト専用のリンクからのみ開けます。
+              リンクをお持ちでない場合は、管理者にお問い合わせください。
+              管理者の方は、右上の「ログイン」からログインしてください。
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentBundle) {
     return (
