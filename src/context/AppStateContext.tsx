@@ -133,6 +133,10 @@ export interface AppStateContextValue {
     category: 'roleTags' | 'skillTags' | 'relationTags' | 'groupTags',
     tag: TagItem
   ) => Promise<void>;
+  reorderTags: (
+    category: 'roleTags' | 'skillTags' | 'relationTags' | 'groupTags',
+    orderedTags: TagItem[]
+  ) => Promise<void>;
   deleteTag: (
     category: 'roleTags' | 'skillTags' | 'relationTags' | 'groupTags',
     tagId: string
@@ -914,6 +918,36 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               project: {
                 ...b.project,
                 [category]: nextList,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+          },
+        };
+      });
+    },
+    [commitStoreUpdate, currentProjectId, permissions.isEditor]
+  );
+
+  const reorderTags = useCallback(
+    async (
+      category: 'roleTags' | 'skillTags' | 'relationTags' | 'groupTags',
+      orderedTags: TagItem[]
+    ) => {
+      if (!permissions.isEditor) {
+        throw new Error('PERMISSION_DENIED: タグの並び順変更にはプロジェクト編集権限が必要です。');
+      }
+      await commitStoreUpdate((prev) => {
+        const b = prev.projects[currentProjectId];
+        if (!b) return prev;
+        return {
+          ...prev,
+          projects: {
+            ...prev.projects,
+            [currentProjectId]: {
+              ...b,
+              project: {
+                ...b.project,
+                [category]: orderedTags,
                 updatedAt: new Date().toISOString(),
               },
             },
@@ -2366,6 +2400,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     addEditorEmail,
     revokeEditorEmail,
     upsertTag,
+    reorderTags,
     deleteTag,
     createDiagram,
     duplicateDiagram,

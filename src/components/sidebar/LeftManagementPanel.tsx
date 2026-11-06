@@ -6,6 +6,7 @@ import {
   Eye,
   FolderGit2,
   GitCommitHorizontal,
+  GripVertical,
   Layers,
   Lock,
   Pencil,
@@ -71,6 +72,7 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
     deletePersonWithCascade,
     deleteRelationship,
     upsertTag,
+    reorderTags,
     deleteTag,
   } = useAppState();
 
@@ -82,6 +84,12 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
   >('roleTags');
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [editingTagName, setEditingTagName] = useState('');
+  const [editingTagColor, setEditingTagColor] = useState('#2563eb');
+  const [draggedTagInfo, setDraggedTagInfo] = useState<{
+    category: 'roleTags' | 'skillTags' | 'relationTags' | 'groupTags';
+    index: number;
+  } | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   const groupCounts = useMemo(() => {
     if (!currentBundle) return {};
@@ -895,73 +903,170 @@ export const LeftManagementPanel: React.FC<LeftManagementPanelProps> = ({
                 ] as const
               ).map((cat) => (
                 <div key={cat.key} className="space-y-1.5">
-                  <h4 className="text-[11px] font-bold text-slate-500">{cat.title}</h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[11px] font-bold text-slate-500">{cat.title}</h4>
+                    {permissions.isEditor && currentBundle.project[cat.key].length > 1 && (
+                      <span className="text-[10px] text-slate-400">ドラッグで並び替え可</span>
+                    )}
+                  </div>
                   <div className="space-y-1">
-                    {currentBundle.project[cat.key].map((tag) => (
-                      <div
-                        key={tag.id}
-                        className="flex items-center justify-between rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
-                      >
-                        {editingTagId === tag.id ? (
-                          <div className="flex items-center gap-1.5 flex-1">
-                            <input
-                              type="text"
-                              value={editingTagName}
-                              onChange={(e) => setEditingTagName(e.target.value)}
-                              className="flex-1 rounded border border-slate-300 px-2 py-0.5 text-xs"
-                            />
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                if (editingTagName.trim()) {
-                                  await upsertTag(cat.key, {
-                                    ...tag,
-                                    name: editingTagName.trim(),
-                                  });
-                                }
-                                setEditingTagId(null);
-                              }}
-                              className="rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white"
-                            >
-                              保存
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-2">
-                              <span
-                                className="w-3 h-3 rounded-full"
-                                style={{ backgroundColor: tag.color }}
+                    {currentBundle.project[cat.key].map((tag, idx) => {
+                      const isDragging =
+                        draggedTagInfo?.category === cat.key && draggedTagInfo.index === idx;
+                      const isDragOver =
+                        draggedTagInfo?.category === cat.key && dragOverIndex === idx;
+
+                      return (
+                        <div
+                          key={tag.id}
+                          draggable={permissions.isEditor && editingTagId === null}
+                          onDragStart={(e) => {
+                            setDraggedTagInfo({ category: cat.key, index: idx });
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            if (draggedTagInfo && draggedTagInfo.category === cat.key) {
+                              e.dataTransfer.dropEffect = 'move';
+                              if (dragOverIndex !== idx) {
+                                setDragOverIndex(idx);
+                              }
+                            }
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverIndex === idx) {
+                              setDragOverIndex(null);
+                            }
+                          }}
+                          onDrop={async (e) => {
+                            e.preventDefault();
+                            if (
+                              !draggedTagInfo ||
+                              draggedTagInfo.category !== cat.key ||
+                              draggedTagInfo.index === idx
+                            ) {
+                              setDraggedTagInfo(null);
+                              setDragOverIndex(null);
+                              return;
+                            }
+                            const list = [...currentBundle.project[cat.key]];
+                            const [moved] = list.splice(draggedTagInfo.index, 1);
+                            list.splice(idx, 0, moved);
+                            await reorderTags(cat.key, list);
+                            setDraggedTagInfo(null);
+                            setDragOverIndex(null);
+                          }}
+                          onDragEnd={() => {
+                            setDraggedTagInfo(null);
+                            setDragOverIndex(null);
+                          }}
+                          className={`flex items-center justify-between rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
+                            isDragging
+                              ? 'opacity-40 border-indigo-400 bg-indigo-50/50'
+                              : isDragOver
+                              ? 'border-indigo-500 ring-2 ring-indigo-200 bg-indigo-50/70 scale-[1.01]'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          {editingTagId === tag.id ? (
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                              <input
+                                type="color"
+                                value={editingTagColor}
+                                onChange={(e) => setEditingTagColor(e.target.value)}
+                                className="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white shrink-0 p-0"
+                                title="カラーを変更"
                               />
-                              <span className="font-bold text-slate-800">{tag.name}</span>
+                              <input
+                                type="text"
+                                value={editingTagName}
+                                onChange={(e) => setEditingTagName(e.target.value)}
+                                onKeyDown={async (e) => {
+                                  if (e.key === 'Enter') {
+                                    if (editingTagName.trim()) {
+                                      await upsertTag(cat.key, {
+                                        ...tag,
+                                        name: editingTagName.trim().slice(0, 40),
+                                        color: editingTagColor,
+                                      });
+                                    }
+                                    setEditingTagId(null);
+                                  } else if (e.key === 'Escape') {
+                                    setEditingTagId(null);
+                                  }
+                                }}
+                                autoFocus
+                                className="flex-1 min-w-0 rounded border border-indigo-400 px-2 py-0.5 text-xs focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (editingTagName.trim()) {
+                                    await upsertTag(cat.key, {
+                                      ...tag,
+                                      name: editingTagName.trim().slice(0, 40),
+                                      color: editingTagColor,
+                                    });
+                                  }
+                                  setEditingTagId(null);
+                                }}
+                                className="rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white shrink-0 hover:bg-indigo-700"
+                              >
+                                保存
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingTagId(null)}
+                                className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-600 shrink-0 hover:bg-slate-100"
+                              >
+                                ✕
+                              </button>
                             </div>
-                            {permissions.isEditor && (
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingTagId(tag.id);
-                                    setEditingTagName(tag.name);
-                                  }}
-                                  className="p-1 text-slate-400 hover:text-slate-700"
-                                  title="タグ名称変更"
-                                >
-                                  <Pencil size={12} />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => deleteTag(cat.key, tag.id)}
-                                  className="p-1 text-rose-400 hover:text-rose-600"
-                                  title="タグ削除"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-2 min-w-0">
+                                {permissions.isEditor && (
+                                  <GripVertical
+                                    size={13}
+                                    className="text-slate-400 hover:text-slate-600 cursor-grab shrink-0 -ml-1 active:cursor-grabbing"
+                                    title="ドラッグして並び順を変更"
+                                  />
+                                )}
+                                <span
+                                  className="w-3 h-3 rounded-full shrink-0"
+                                  style={{ backgroundColor: tag.color }}
+                                />
+                                <span className="font-bold text-slate-800 truncate">{tag.name}</span>
                               </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    ))}
+                              {permissions.isEditor && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingTagId(tag.id);
+                                      setEditingTagName(tag.name);
+                                      setEditingTagColor(tag.color);
+                                    }}
+                                    className="p-1 text-slate-400 hover:text-indigo-600 rounded"
+                                    title="タグ編集（名称・カラー変更）"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteTag(cat.key, tag.id)}
+                                    className="p-1 text-rose-400 hover:text-rose-600 rounded"
+                                    title="タグ削除"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
