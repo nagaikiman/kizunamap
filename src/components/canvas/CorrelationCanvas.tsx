@@ -182,6 +182,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
   const [confirmDeleteDiagId, setConfirmDeleteDiagId] = useState<string | null>(null);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [isExportingPng, setIsExportingPng] = useState(false);
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
 
   // ドラッグ中のグループ枠ハイライト状態（移動 or Ctrl/右ドラッグによるコピー追加）
   const [dragHoverGroupId, setDragHoverGroupId] = useState<string | null>(null);
@@ -204,6 +205,21 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
       currentBundle.people
     );
   }, [currentBundle]);
+
+  // グループ枠のサイズ変更（選択して上下左右の枠・四隅をドラッグ）。サイズは "size:group:{id}" キーに幅=x・高さ=y で保存
+  const handleResizeGroup = useCallback(
+    (groupId: string, box: { x: number; y: number; width: number; height: number }) => {
+      if (!activeDiagram || !permissions.isEditor) return;
+      void updateMultipleNodePositions(activeDiagram.id, {
+        [`group:${groupId}`]: { x: Math.round(box.x), y: Math.round(box.y) },
+        [`size:group:${groupId}`]: {
+          x: Math.round(box.width),
+          y: Math.round(box.height),
+        },
+      });
+    },
+    [activeDiagram, permissions.isEditor, updateMultipleNodePositions]
+  );
 
   // 選択対象に関連するエンティティの算出
   const connectedEntityKeys = useMemo(() => {
@@ -369,8 +385,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         const relX = Math.max(16, savedSgPos?.x ?? baseBox.defaultRelativePos.x);
         const relY = Math.max(46, savedSgPos?.y ?? baseBox.defaultRelativePos.y);
 
-        let w = baseBox.width;
-        let h = baseBox.height;
+        let w = activeDiagram.nodePositions[`size:group:${sg.id}`]?.x ?? baseBox.width;
+        let h = activeDiagram.nodePositions[`size:group:${sg.id}`]?.y ?? baseBox.height;
 
         if (viewMode === 'mixed') {
           const sgMems = currentBundle.memberships.filter((m) => m.groupId === sg.id);
@@ -403,8 +419,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
         };
         const pos = activeDiagram.nodePositions[`group:${lg.id}`] || baseBox.defaultRelativePos;
 
-        let lgWidth = baseBox.width;
-        let lgHeight = baseBox.height;
+        let lgWidth = activeDiagram.nodePositions[`size:group:${lg.id}`]?.x ?? baseBox.width;
+        let lgHeight = activeDiagram.nodePositions[`size:group:${lg.id}`]?.y ?? baseBox.height;
 
         if (!collapsedSet.has(lg.id)) {
           for (const sg of smallGroups.filter((s) => s.parentGroupId === lg.id)) {
@@ -477,6 +493,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             isCollapsed: collapsedSet.has(lg.id),
             hasChildren,
             showHandles,
+            canResize: permissions.isEditor && interactionMode === 'move',
+            onResizeGroup: handleResizeGroup,
             isDropTarget: dragHoverGroupId === lg.id && !dragIsCopyMode,
             isCopyDropTarget: dragHoverGroupId === lg.id && dragIsCopyMode,
             isHighlighted: selectedEntityKey === key,
@@ -562,6 +580,8 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
             isCollapsed: false,
             hasChildren: false,
             showHandles,
+            canResize: permissions.isEditor && interactionMode === 'move',
+            onResizeGroup: handleResizeGroup,
             isDropTarget: dragHoverGroupId === sg.id && !dragIsCopyMode,
             isCopyDropTarget: dragHoverGroupId === sg.id && dragIsCopyMode,
             isHighlighted: selectedEntityKey === key,
@@ -1141,6 +1161,7 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
     permissions.isEditor,
     interactionMode,
     isExportingPng,
+    handleResizeGroup,
     groupMemberCounts,
     dragHoverGroupId,
     dragIsCopyMode,
@@ -1635,7 +1656,85 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
 
   if (!currentBundle || !activeDiagram) return null;
 
-  const focusedGroupId = activeDiagram.filterConfig?.focusedGroupId || null;
+  const filterCfg = activeDiagram.filterConfig;
+  const selectedGroupIdsUi: string[] =
+    filterCfg?.selectedGroupIds && filterCfg.selectedGroupIds.length > 0
+      ? filterCfg.selectedGroupIds
+      : filterCfg?.focusedGroupId
+      ? [filterCfg.focusedGroupId]
+      : [];
+  const selectedRoleIdsUi = filterCfg?.selectedRoleIds ?? [];
+  const selectedSkillIdsUi = filterCfg?.selectedSkillIds ?? [];
+  const selectedRelTagIdsUi = filterCfg?.selectedRelationTagIds ?? [];
+  const activeFilterCount =
+    selectedGroupIdsUi.length +
+    selectedRoleIdsUi.length +
+    selectedSkillIdsUi.length +
+    selectedRelTagIdsUi.length;
+
+  const toggleFilterId = (
+    key: 'selectedGroupIds' | 'selectedRoleIds' | 'selectedSkillIds' | 'selectedRelationTagIds',
+    current: string[],
+    id: string
+  ) => {
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    updateDiagram(activeDiagram.id, {
+      filterConfig: {
+        ...activeDiagram.filterConfig,
+        ...(key === 'selectedGroupIds' ? { focusedGroupId: null } : {}),
+        [key]: next,
+      },
+    });
+  };
+
+  const clearAllFilters = () => {
+    updateDiagram(activeDiagram.id, {
+      filterConfig: {
+        ...activeDiagram.filterConfig,
+        focusedGroupId: null,
+        selectedGroupIds: [],
+        selectedRoleIds: [],
+        selectedSkillIds: [],
+        selectedRelationTagIds: [],
+      },
+    });
+  };
+
+  const filterSections: {
+    title: string;
+    key: 'selectedGroupIds' | 'selectedRoleIds' | 'selectedSkillIds' | 'selectedRelationTagIds';
+    selected: string[];
+    items: { id: string; name: string; color?: string }[];
+  }[] = [
+    {
+      title: 'グループ',
+      key: 'selectedGroupIds',
+      selected: selectedGroupIdsUi,
+      items: currentBundle.groups.map((g) => ({
+        id: g.id,
+        name: `${g.kind === 'large' ? '■ ' : '└ '}${g.name}`,
+        color: g.color,
+      })),
+    },
+    {
+      title: 'ロール（役割）',
+      key: 'selectedRoleIds',
+      selected: selectedRoleIdsUi,
+      items: currentBundle.project.roleTags,
+    },
+    {
+      title: 'スキル',
+      key: 'selectedSkillIds',
+      selected: selectedSkillIdsUi,
+      items: currentBundle.project.skillTags,
+    },
+    {
+      title: '関係タグ',
+      key: 'selectedRelationTagIds',
+      selected: selectedRelTagIdsUi,
+      items: currentBundle.project.relationTags,
+    },
+  ];
   const myLinkedPerson = currentBundle.people.find(
     (p) => actor.uid && p.linkedUid === actor.uid
   );
@@ -1838,28 +1937,89 @@ export const CorrelationCanvas: React.FC<CorrelationCanvasProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
-            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
-              <Filter size={13} className="text-slate-400" />
-              <select
-                value={focusedGroupId || ''}
-                onChange={(e) =>
-                  updateDiagram(activeDiagram.id, {
-                    filterConfig: {
-                      ...activeDiagram.filterConfig,
-                      focusedGroupId: e.target.value || null,
-                    },
-                  })
-                }
-                className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none"
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowFilterPanel((v) => !v)}
+                className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-xs font-bold transition ${
+                  activeFilterCount > 0
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                }`}
+                data-testid="filter-button"
               >
-                <option value="">すべてのグループを表示</option>
-                {currentBundle.groups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.kind === 'large' ? '■ ' : '└ '}
-                    {g.name} で絞り込み
-                  </option>
-                ))}
-              </select>
+                <Filter size={13} />
+                絞り込み{activeFilterCount > 0 ? `（${activeFilterCount}）` : ''}
+              </button>
+
+              {showFilterPanel && (
+                <div className="absolute right-0 top-full mt-1 z-40 w-[min(92vw,360px)] max-h-[70vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-slate-900">
+                      絞り込み（複数選択可・カテゴリ内はいずれか／カテゴリ間は両方）
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowFilterPanel(false)}
+                      className="rounded p-0.5 text-slate-500 hover:bg-slate-100"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {filterSections.map((sec) => (
+                    <div key={sec.key} className="space-y-1">
+                      <div className="text-[11px] font-extrabold text-slate-500">
+                        {sec.title}
+                        {sec.selected.length > 0 ? `（${sec.selected.length}件選択中）` : ''}
+                      </div>
+                      {sec.items.length === 0 ? (
+                        <div className="text-[11px] text-slate-400">登録がありません</div>
+                      ) : (
+                        <div className="space-y-1">
+                          {sec.items.map((it) => {
+                            const checked = sec.selected.includes(it.id);
+                            return (
+                              <label
+                                key={it.id}
+                                className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold cursor-pointer ${
+                                  checked
+                                    ? 'border-indigo-400 bg-indigo-50 text-indigo-800'
+                                    : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleFilterId(sec.key, sec.selected, it.id)}
+                                />
+                                {it.color && (
+                                  <span
+                                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                                    style={{ backgroundColor: it.color }}
+                                  />
+                                )}
+                                <span className="truncate">{it.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={clearAllFilters}
+                      disabled={activeFilterCount === 0}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                    >
+                      すべて解除
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {permissions.isEditor && (

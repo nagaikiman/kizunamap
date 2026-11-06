@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
 import {
   ChevronDown,
   ChevronRight,
@@ -193,7 +193,7 @@ export const ScopedPersonFlowNode: React.FC<NodeProps> = ({ data }) => {
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-extrabold text-slate-900 truncate">
+          <div className="text-xs font-extrabold text-slate-900 break-words leading-tight">
             {resolved.effectiveDisplayName}
           </div>
         </div>
@@ -277,7 +277,7 @@ export const PersonFlowNode: React.FC<NodeProps> = ({ data }) => {
           size="sm"
         />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-extrabold text-slate-900 truncate">
+          <div className="text-xs font-extrabold text-slate-900 break-words leading-tight">
             {resolved.effectiveDisplayName}
           </div>
           <div className="mt-0.5 flex flex-wrap gap-1">
@@ -440,6 +440,11 @@ export interface GroupContainerNodeData extends Record<string, unknown> {
   isCollapsed: boolean;
   hasChildren: boolean;
   showHandles?: boolean;
+  canResize?: boolean;
+  onResizeGroup?: (
+    groupId: string,
+    box: { x: number; y: number; width: number; height: number }
+  ) => void;
   isDropTarget: boolean;
   isCopyDropTarget: boolean;
   isHighlighted: boolean;
@@ -458,13 +463,12 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
     iconDataUrl,
     directCount,
     totalCount,
-    width,
-    height,
     viewMode,
     embeddedMembers,
     isCollapsed,
     hasChildren,
     showHandles,
+    canResize,
     isDropTarget,
     isCopyDropTarget,
     isHighlighted,
@@ -510,8 +514,8 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
       onClick={handleGroupClick}
       title="クリックでフォーカス / ダブルクリックでグループ詳細を開く"
       style={{
-        width,
-        height,
+        width: '100%',
+        height: '100%',
         borderColor: group.color,
         backgroundColor: isLarge ? `${group.color}0A` : '#ffffff',
       }}
@@ -520,6 +524,28 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
       } ${dropHighlightClass} ${opacityClass}`}
       data-testid={`group-node-${group.id}`}
     >
+      {/* 移動 / 所属ドラッグ画面では、ブロックの上下左右の枠・四隅をドラッグして広げられる */}
+      <NodeResizer
+        isVisible={Boolean(canResize) && isHighlighted}
+        minWidth={150}
+        minHeight={80}
+        lineStyle={{ borderWidth: 6, borderColor: 'rgba(79,70,229,0.35)' }}
+        handleStyle={{
+          width: 10,
+          height: 10,
+          borderRadius: 3,
+          backgroundColor: '#4f46e5',
+          border: '1px solid #ffffff',
+        }}
+        onResizeEnd={(_e, params) =>
+          d.onResizeGroup?.(group.id, {
+            x: params.x,
+            y: params.y,
+            width: params.width,
+            height: params.height,
+          })
+        }
+      />
       <FourSideHandles visible={Boolean(showHandles)} />
 
       {/* コンテナ枠の左上ヘッダーバー */}
@@ -530,7 +556,7 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
           backgroundColor: isLarge ? `${group.color}18` : `${group.color}12`,
         }}
       >
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           <AvatarBadge
             name={group.name}
             color={group.color}
@@ -539,18 +565,12 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
             size="xs"
             shape="rounded"
           />
-          <span className="text-xs font-extrabold text-slate-900 truncate">{group.name}</span>
-          {isLarge && (
-            <span
-              className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none shrink-0"
-              style={{ backgroundColor: group.color }}
-            >
-              大グループ
-            </span>
-          )}
+          <span className="text-xs font-extrabold text-slate-900 break-words leading-tight min-w-0">
+            {group.name}
+          </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 pl-2">
           <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200 whitespace-nowrap">
             {isLarge ? (
               <>
@@ -558,7 +578,7 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
                 直下 {directCount}人 / 配下計 {totalCount}人
               </>
             ) : (
-              <>({directCount}人)</>
+              <>{directCount}人</>
             )}
           </span>
 
@@ -595,9 +615,6 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
       {/* グループ図（グループ中心 / groupsモード）のとき：直下メンバーとロールを枠内にずらっと表示 */}
       {viewMode === 'groups' && (
         <div className="p-3 space-y-1.5">
-          <div className="text-[10px] font-extrabold text-slate-500">
-            {isLarge ? '大グループ直下メンバー・役割' : '小グループ所属メンバー・役割'}
-          </div>
           {embeddedMembers.length > 0 ? (
             <div className="grid grid-cols-1 gap-1.5">
               {embeddedMembers.map((m) => (
@@ -607,7 +624,7 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
                   title="クリックでフォーカス / ダブルクリックで詳細プロフィールを開く"
                   className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-200 px-2.5 py-1.5 shadow-2xs hover:border-indigo-400 cursor-pointer"
                 >
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 shrink-0 max-w-full">
                     <AvatarBadge
                       name={m.displayName}
                       color={m.personColor}
@@ -615,23 +632,23 @@ export const GroupFlowNode: React.FC<NodeProps> = ({ data }) => {
                       preset={m.avatarPreset}
                       size="xs"
                     />
-                    <span className="text-xs font-extrabold text-slate-900 truncate">
+                    <span className="text-xs font-extrabold text-slate-900 break-words leading-tight">
                       {m.displayName}
                     </span>
                   </div>
-                  <div className="flex flex-wrap gap-1 justify-end shrink-0">
+                  <div className="flex flex-nowrap gap-1 justify-end min-w-0 overflow-hidden">
                     {m.roles.length > 0 ? (
                       m.roles.map((r) => (
                         <span
                           key={r.id}
-                          className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none"
+                          className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white leading-none whitespace-nowrap shrink-0"
                           style={{ backgroundColor: r.color }}
                         >
                           {r.name}
                         </span>
                       ))
                     ) : (
-                      <span className="text-[10px] text-slate-400 font-semibold">メンバー</span>
+                      <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">メンバー</span>
                     )}
                   </div>
                 </div>
